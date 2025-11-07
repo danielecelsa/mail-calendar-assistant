@@ -15,4 +15,4 @@ __pycache__/
 .env
 # pytest / caches
 .pytest_cache/
-.logs/
+logs/
