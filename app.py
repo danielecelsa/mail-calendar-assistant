@@ -1263,7 +1263,7 @@ with st.sidebar:
     st.header("Project :green[info]:", divider="rainbow")
     st.markdown(" ")
     st.markdown(" ")
-    with st.expander("TEST Tech stack & How to use:"):
+    with st.expander("Tech stack & How to use:"):
         with st.expander("This demo features:"):
             with st.expander("- Supervisor + Sub-Agents workflow"):
                 st.markdown("This workflow allows the Supervisor to delegate tasks to Sub-Agents, which can act as specialized tools.")
