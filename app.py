@@ -119,7 +119,6 @@ def get_usage_fallback_queue():
     return queue.Queue()
 
 @st.cache_resource
-@st.cache_resource
 def get_kv_client():
     """
     Gets a singleton Valkey/Redis client connection.
@@ -614,6 +613,33 @@ def wait_and_flush(timeout: float = 1.0, stable_period: float = 0.05):
                 break
         time.sleep(0.01)
 
+
+def get_user_info():
+    """
+    Tries to get the user's IP address and User-Agent from Streamlit's internal API.
+    This is an undocumented feature and may break in future Streamlit versions.
+    Returns a dictionary with 'ip' and 'user_agent'.
+    """
+    user_info = {"ip": "Unknown", "user_agent": "Unknown"}
+    try:
+        # This is the internal, undocumented way to get the request headers
+        from streamlit.web.server.server import Server
+        session_info = Server.get_current()._get_session_info_for_headers()
+        headers = session_info.headers
+
+        # Render and other proxies put the real IP in 'X-Forwarded-For'
+        # It can be a comma-separated list, the first one is the client
+        if 'X-Forwarded-For' in headers:
+            user_info['ip'] = headers['X-Forwarded-For'].split(',')[0].strip()
+        
+        if 'User-Agent' in headers:
+            user_info['user_agent'] = headers['User-Agent']
+
+    except Exception as e:
+        # If the internal API changes or something goes wrong, log it but don't crash
+        logger.warning(f"Could not get user info from Streamlit headers: {e}")
+
+    return user_info
 
 @st.cache_resource
 def get_db():
@@ -1209,6 +1235,14 @@ with st.expander('About this demo:', expanded=False):
 # Chat submission (note: using agent.invoke recommended to extract content)
 user_query = st.chat_input("Type your message here...")
 if user_query:
+
+    # Get user info as soon as they submit a query
+    user_details = get_user_info()
+    logger.info(
+        f"New query received from IP: {user_details['ip']} "
+        f"with User-Agent: {user_details['user_agent']}"
+    )
+    
     st.session_state.chat_history.append(HumanMessage(content=user_query))
 
     thread_id = st.session_state.conversation_thread_id
