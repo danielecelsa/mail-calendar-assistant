@@ -16,3 +16,4 @@ __pycache__/
 # pytest / caches
 .pytest_cache/
 logs/
+bkp/

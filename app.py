@@ -15,6 +15,8 @@ import re
 import datetime
 import json
 import redis
+import valkey
+import time
 from time import perf_counter
 
 import streamlit as st
@@ -117,31 +119,38 @@ def get_usage_fallback_queue():
     return queue.Queue()
 
 @st.cache_resource
-def get_redis_client():
+@st.cache_resource
+def get_kv_client():
     """
-    Gets a singleton Redis client connection.
-    Tests the connection and returns None if it fails.
+    Gets a singleton Valkey/Redis client connection.
+    Uses REDIS_URL from environment variables for production (Render).
+    Falls back to a local connection for development.
     """
+    # Render provides the connection string for its Valkey service in the REDIS_URL env var
+    redis_url = os.environ.get("REDIS_URL", None)
+
     try:
-        # Connect to Redis. The decode_responses=True is important!
-        # It ensures that data read from Redis is automatically converted to Python strings.
-        redis_client = redis.Redis(
-            host=os.environ.get("REDIS_HOST", "localhost"),
-            port=int(os.environ.get("REDIS_PORT", 6379)),
-            db=0,
-            decode_responses=True
-        )
+        if redis_url:
+            # Production environment (Render) - use the provided URL
+            logger.info("Connecting to Key-Value store via REDIS_URL.")
+            kv_client = valkey.from_url(redis_url, decode_responses=True)
+        else:
+            # Local development - connect to your local Redis/Valkey instance
+            logger.info("REDIS_URL not found. Connecting to localhost.")
+            kv_client = valkey.Redis(host="localhost", port=6379, db=0, decode_responses=True)
+
         # Ping the server to check if the connection is alive
-        redis_client.ping()
-        logger.info("Successfully connected to Redis.")
-        return redis_client
-    except redis.exceptions.ConnectionError as e:
-        logger.warning(f"Could not connect to Redis: {e}. Using in-memory queue as fallback.")
+        kv_client.ping()
+        logger.info("Successfully connected to Key-Value store.")
+        return kv_client
+        
+    except valkey.exceptions.ConnectionError as e:
+        logger.warning(f"Could not connect to Key-Value store: {e}. Using in-memory queue as fallback.")
         return None
 
 
 # Get the singleton instances
-redis_client = get_redis_client()
+kv_client = get_kv_client() # Valkey client (Redis-compatible)
 WORKFLOW_QUEUE = get_workflow_fallback_queue() # This will be used only if Redis fails
 USAGE_QUEUE = get_usage_fallback_queue()    # This will be used only if Redis fails
 
@@ -150,16 +159,16 @@ REDIS_WORKFLOW_KEY = "workflow_queue"
 REDIS_USAGE_KEY = "usage_queue"
 
 
-# LOGGING -> Create and add the Redis logging handler IF redis_client is available ---
-if redis_client:
+# LOGGING -> Create and add the Redis logging handler IF kv_client is available ---
+if kv_client:
     try:
-        redis_handler = RedisLogHandler(client=redis_client, key=REDIS_LOGS_KEY)
+        redis_handler = RedisLogHandler(client=kv_client, key=REDIS_LOGS_KEY)
         redis_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
         redis_handler.setFormatter(redis_formatter)
         logger.addHandler(redis_handler)
-        logger.info("Redis logging handler successfully configured.")
+        logger.info("Key-Value logging handler successfully configured.")
     except Exception as e:
-        logger.warning(f"Failed to configure Redis logging handler: {e}")
+        logger.warning(f"Failed to configure Key-Value logging handler: {e}")
 
 
 # Initialize Streamlit session state variables
@@ -226,13 +235,13 @@ def buffer_workflow(key: str, entries: list[str]):
     data_packet = json.dumps({"key": key, "entries": entries})
 
     # Try to use Redis first
-    if redis_client:
+    if kv_client:
         try:
-            redis_client.lpush(REDIS_WORKFLOW_KEY, data_packet)
-            logger.info("Buffered workflow to Redis for key=%s", key)
+            kv_client.lpush(REDIS_WORKFLOW_KEY, data_packet)
+            logger.info("Buffered workflow to Key-Value store for key=%s", key)
             return
-        except redis.exceptions.ConnectionError as e:
-            logger.warning(f"Redis connection error in buffer_workflow: {e}. Falling back to queue.")
+        except valkey.exceptions.ConnectionError as e:
+            logger.warning(f"Key-Value store connection error in buffer_workflow: {e}. Falling back to queue.")
             # Fall through to the queue logic below
     
     # Fallback logic
@@ -259,13 +268,13 @@ def buffer_usage(key: str, last_input: int, last_output: int, total_t: int):
     data_packet = json.dumps(usage_data)
 
     # Try to use Redis first
-    if redis_client:
+    if kv_client:
         try:
-            redis_client.lpush(REDIS_USAGE_KEY, data_packet)
-            logger.info("Buffered usage to Redis for key=%s", key)
+            kv_client.lpush(REDIS_USAGE_KEY, data_packet)
+            logger.info("Buffered usage to Key-Value store for key=%s", key)
             return
-        except redis.exceptions.ConnectionError as e:
-            logger.warning(f"Redis connection error in buffer_usage: {e}. Falling back to queue.")
+        except valkey.exceptions.ConnectionError as e:
+            logger.warning(f"Key-Value store connection error in buffer_usage: {e}. Falling back to queue.")
             # Fall through to the queue logic below
     
     # Fallback logic
@@ -277,21 +286,21 @@ def buffer_usage(key: str, last_input: int, last_output: int, total_t: int):
 
 def flush_workflow_queue():
     """Called from main Streamlit flow to merge buffered entries into st.session_state."""
-    
-    # --- Try flushing from Redis first ---
-    if redis_client:
+
+    # --- Try flushing from Key-Value store first ---
+    if kv_client:
         try:
             # RPOP atomically removes and returns the last element. Loop until the list is empty.
-            while data_packet := redis_client.rpop(REDIS_WORKFLOW_KEY):
+            while data_packet := kv_client.rpop(REDIS_WORKFLOW_KEY):
                 item = json.loads(data_packet)
                 key, entries = item["key"], item["entries"]
-                logger.info("Flushing workflow from Redis: key=%s entries=%d", key, len(entries))
+                logger.info("Flushing workflow from Key-Value store: key=%s entries=%d", key, len(entries))
                 if key not in st.session_state or not isinstance(st.session_state.get(key), list):
                     st.session_state[key] = []
                 st.session_state[key].extend([e for e in entries if e and (not isinstance(e, str) or e.strip())])
-            return # If we successfully processed Redis, we are done.
-        except redis.exceptions.ConnectionError as e:
-            logger.warning(f"Redis connection error during flush_workflow_queue: {e}. Checking fallback queue.")
+            return # If we successfully processed Key-Value store, we are done.
+        except valkey.exceptions.ConnectionError as e:
+            logger.warning(f"Key-Value store connection error during flush_workflow_queue: {e}. Checking fallback queue.")
             # Fall through to check the in-memory queue
 
     # --- Fallback: Flush from in-memory queue ---
@@ -308,14 +317,14 @@ def flush_workflow_queue():
 
 def flush_usage_queue():
     """Called from main Streamlit flow to merge buffered entries (usage) into st.session_state."""
-    
-    # --- Try flushing from Redis first ---
-    if redis_client:
+
+    # --- Try flushing from Key-Value store first ---
+    if kv_client:
         try:
-            while data_packet := redis_client.rpop(REDIS_USAGE_KEY):
+            while data_packet := kv_client.rpop(REDIS_USAGE_KEY):
                 usage = json.loads(data_packet)
                 key = usage.get("key")
-                logger.info("Flushing usage from Redis: key=%s usage=%s", key, usage)
+                logger.info("Flushing usage from Key-Value store: key=%s usage=%s", key, usage)
                 
                 # Ensure a dict exists for this agent key
                 if key not in st.session_state or not isinstance(st.session_state.get(key), dict):
@@ -345,10 +354,10 @@ def flush_usage_queue():
                 st.session_state.total_input_tokens += new_input
                 st.session_state.total_output_tokens += new_output
                 st.session_state.total_tokens += new_total
-            return # If we successfully processed Redis, we are done.
-        
-        except redis.exceptions.ConnectionError as e:
-            logger.warning(f"Redis connection error during flush_usage_queue: {e}. Checking fallback queue.")
+            return # If we successfully processed Key-Value store, we are done.
+
+        except valkey.exceptions.ConnectionError as e:
+            logger.warning(f"Key-Value store connection error during flush_usage_queue: {e}. Checking fallback queue.")
             # Fall through to check the in-memory queue
 
     # --- Fallback: Flush from in-memory queue ---
@@ -583,6 +592,27 @@ def resolve_natural_date(request_text: str, reference_date: datetime.date | None
             time_iso = tm2.group(1)
 
     return (date_iso, time_iso)
+
+
+def wait_and_flush(timeout: float = 1.0, stable_period: float = 0.05):
+    start = time.time()
+    # initial flush
+    flush_workflow_queue()
+    flush_usage_queue()
+    last_total = WORKFLOW_QUEUE.qsize() + USAGE_QUEUE.qsize()
+    last_change_time = time.time()
+    while time.time() - start < timeout:
+        total = WORKFLOW_QUEUE.qsize() + USAGE_QUEUE.qsize()
+        if total != last_total:
+            logger.info("wait_and_flush: queue size changed %s -> %s; flushing", last_total, total)
+            last_total = total
+            last_change_time = time.time()
+            flush_workflow_queue()
+            flush_usage_queue()
+        else:
+            if time.time() - last_change_time >= stable_period:
+                break
+        time.sleep(0.01)
 
 
 @st.cache_resource
@@ -1181,7 +1211,7 @@ user_query = st.chat_input("Type your message here...")
 if user_query:
     st.session_state.chat_history.append(HumanMessage(content=user_query))
 
-    thread_id = st.session_state.conversation_thread_id #####SERVE?
+    thread_id = st.session_state.conversation_thread_id
     callback = UsageMetadataCallbackHandler()
     config = {"configurable": {"thread_id": thread_id}, "callbacks": [callback]}
     inputs = {"messages": st.session_state.chat_history}
@@ -1190,44 +1220,13 @@ if user_query:
     start = perf_counter()
     supervisor_answer = supervisor.invoke(inputs, config=config)
     st.session_state.latency = perf_counter() - start
-    
-    # to show output tokens and total cost only after first interaction
-    #st.session_state.show=True 
 
     get_workflow(supervisor_answer, 0)
     get_usage(callback.usage_metadata, 0)
 
-    # now merge buffered entries into Streamlit session state so the UI can render them
-    #flush_workflow_queue()
-    #flush_usage_queue()
-    # Wait briefly for any background agent threads (nested tool calls) to push their workflow/usage entries.
-    # Poll + flush until the queue has been stable for a short period (avoid missing late entries).
-    import time
-
-    def wait_and_flush(timeout: float = 1.0, stable_period: float = 0.05):
-        start = time.time()
-        # initial flush
-        flush_workflow_queue()
-        flush_usage_queue()
-        last_total = WORKFLOW_QUEUE.qsize() + USAGE_QUEUE.qsize()
-        last_change_time = time.time()
-        while time.time() - start < timeout:
-            total = WORKFLOW_QUEUE.qsize() + USAGE_QUEUE.qsize()
-            if total != last_total:
-                logger.info("wait_and_flush: queue size changed %s -> %s; flushing", last_total, total)
-                last_total = total
-                last_change_time = time.time()
-                flush_workflow_queue()
-                flush_usage_queue()
-            else:
-                if time.time() - last_change_time >= stable_period:
-                    break
-            time.sleep(0.01)
-
     wait_and_flush(timeout=1.0, stable_period=0.05)
-
-
-
+    
+    # Compute cost
     try:
         usd = compute_cost(st.session_state.total_input_tokens, st.session_state.total_output_tokens, COST_PER_1K_INPUT, COST_PER_1K_OUTPUT)
     except Exception:
@@ -1348,10 +1347,6 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("Developed by [Daniele Celsa](https://www.domenicodanielecelsa.com)")
     st.markdown("Source Code: [GitHub](github.com/domenicodanielecelsa/pdf-researcher)")
-
-
-#cols = st.columns([3, 1])
-#with cols[0]:
 
 # Render chat    
 for msg in st.session_state.chat_history:

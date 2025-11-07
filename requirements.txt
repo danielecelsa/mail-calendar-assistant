@@ -88,6 +88,7 @@ typing-inspect==0.9.0
 typing-inspection==0.4.2
 tzdata==2025.2
 urllib3==2.5.0
+valkey==6.1.1
 xxhash==3.6.0
 yarl==1.22.0
 zstandard==0.25.0
