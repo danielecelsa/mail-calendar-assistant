@@ -107,8 +107,13 @@ logger.addHandler(file_handler)
 
 
 @st.cache_resource
-def get_fallback_queue():
-    """Gets a singleton in-memory queue instance for fallback."""
+def get_workflow_fallback_queue():
+    """Gets a singleton in-memory queue instance for workflow fallback."""
+    return queue.Queue()
+
+@st.cache_resource
+def get_usage_fallback_queue():
+    """Gets a singleton in-memory queue instance for usage fallback."""
     return queue.Queue()
 
 @st.cache_resource
@@ -137,8 +142,8 @@ def get_redis_client():
 
 # Get the singleton instances
 redis_client = get_redis_client()
-WORKFLOW_QUEUE = get_fallback_queue() # This will be used only if Redis fails
-USAGE_QUEUE = get_fallback_queue()    # This will be used only if Redis fails
+WORKFLOW_QUEUE = get_workflow_fallback_queue() # This will be used only if Redis fails
+USAGE_QUEUE = get_usage_fallback_queue()    # This will be used only if Redis fails
 
 # Define the names for our Redis lists
 REDIS_WORKFLOW_KEY = "workflow_queue"
@@ -1258,7 +1263,7 @@ with st.sidebar:
     st.header("Project :green[info]:", divider="rainbow")
     st.markdown(" ")
     st.markdown(" ")
-    with st.expander("Tech stack & How to use:"):
+    with st.expander("TEST Tech stack & How to use:"):
         with st.expander("This demo features:"):
             with st.expander("- Supervisor + Sub-Agents workflow"):
                 st.markdown("This workflow allows the Supervisor to delegate tasks to Sub-Agents, which can act as specialized tools.")
