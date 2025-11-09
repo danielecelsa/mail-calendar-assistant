@@ -16,8 +16,12 @@ import datetime
 import json
 import redis
 import valkey
+from logtail import LogtailHandler
 import time
 from time import perf_counter
+
+from streamlit.runtime import get_instance
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -40,6 +44,16 @@ from langchain_community.agent_toolkits import SQLDatabaseToolkit
 # Load environment variables from .env file if not in a rendering environment
 if os.getenv("RENDER") != "true":
     load_dotenv()
+
+# ------------------------------
+# Health Check Endpoint
+# ------------------------------
+# Create a lightweight endpoint for the monitoring service to hit.
+# This avoids running the entire Streamlit app for every check.
+if "health" in st.query_params:
+    st.text("OK")
+    st.stop() # Stop execution to keep it lightweight
+
 
 # ------------------------------
 # Custom Redis Logging Handler
@@ -84,6 +98,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = Path("agent_test.db")
 DB_URI = f"sqlite:///{DB_PATH}"
 
+
 # ------------------------------
 # Logging Setup
 # ------------------------------
@@ -101,7 +116,7 @@ logger.propagate = False
 if logger.hasHandlers():
     logger.handlers.clear()
 
-# --- Create and add a handler for writing to a local file ---
+# --- Handler 1: Always write to a local file (great for local debugging) ---
 file_handler = logging.FileHandler("logs/supervisor_debug.log", mode="a")
 file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 file_handler.setFormatter(file_formatter)
@@ -158,16 +173,32 @@ REDIS_WORKFLOW_KEY = "workflow_queue"
 REDIS_USAGE_KEY = "usage_queue"
 
 
-# LOGGING -> Create and add the Redis logging handler IF kv_client is available ---
-if kv_client:
+# ------------------------------
+# Logging Setup - Part 2
+# ------------------------------
+# --- Handler 2: Add the Logtail handler IF the token is available (for production) ---
+logtail_token = os.environ.get("LOGTAIL_SOURCE_TOKEN")
+if logtail_token:
     try:
-        redis_handler = RedisLogHandler(client=kv_client, key=REDIS_LOGS_KEY)
-        redis_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-        redis_handler.setFormatter(redis_formatter)
-        logger.addHandler(redis_handler)
-        logger.info("Key-Value logging handler successfully configured.")
+        logtail_handler = LogtailHandler(source_token=logtail_token)
+        logtail_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        logtail_handler.setFormatter(logtail_formatter)
+        logger.addHandler(logtail_handler)
+        logger.info("Logtail persistent logging handler successfully configured.")
     except Exception as e:
-        logger.warning(f"Failed to configure Key-Value logging handler: {e}")
+        logger.warning(f"Failed to configure Logtail logging handler: {e}")
+else:
+    # --- Fallback Handler: Use Valkey/Redis for logs ONLY if Logtail isn't configured ---
+    if kv_client:
+        try:
+            # We keep RedisLogHandler class definition, but only use it as a fallback
+            redis_handler = RedisLogHandler(client=kv_client, key=REDIS_LOGS_KEY)
+            redis_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            redis_handler.setFormatter(redis_formatter)
+            logger.addHandler(redis_handler)
+            logger.info("Logtail token not found. Key-Value Valkey/Redis logging handler successfully configured..")
+        except Exception as e:
+            logger.warning(f"Failed to configure Valkey/Redis fallback logging handler: {e}")
 
 
 # Initialize Streamlit session state variables
@@ -617,29 +648,47 @@ def wait_and_flush(timeout: float = 1.0, stable_period: float = 0.05):
 def get_user_info():
     """
     Tries to get the user's IP address and User-Agent from Streamlit's internal API.
-    This is an undocumented feature and may break in future Streamlit versions.
+    This is an undocumented feature and is known to change between Streamlit versions.
     Returns a dictionary with 'ip' and 'user_agent'.
     """
     user_info = {"ip": "Unknown", "user_agent": "Unknown"}
     try:
-        # This is the internal, undocumented way to get the request headers
-        from streamlit.web.server.server import Server
-        session_info = Server.get_current()._get_session_info_for_headers()
-        headers = session_info.headers
+        # Get the context for the current script run
+        ctx = get_script_run_ctx()
+        if ctx is None:
+            logger.warning("Could not get Streamlit script run context.")
+            return user_info
 
-        # Render and other proxies put the real IP in 'X-Forwarded-For'
-        # It can be a comma-separated list, the first one is the client
+        # Get the unique session ID from the context
+        session_id = ctx.session_id
+
+        # Get the Streamlit runtime instance
+        runtime = get_instance()
+        
+        # From the runtime, get the session manager, and then the specific session info
+        session_info = runtime._session_mgr.get_session_info(session_id)
+
+        if session_info is None:
+            logger.warning("Could not find session info for the current session ID.")
+            return user_info
+        
+        # The request headers are located in the 'client' attribute of the session info
+        headers = session_info.client.request.headers
+
+        # Logic for extracting IP and User-Agent remains the same
         if 'X-Forwarded-For' in headers:
             user_info['ip'] = headers['X-Forwarded-For'].split(',')[0].strip()
-        
+        elif hasattr(session_info.client.request, 'remote_ip'):
+            user_info['ip'] = session_info.client.request.remote_ip
+
         if 'User-Agent' in headers:
             user_info['user_agent'] = headers['User-Agent']
 
     except Exception as e:
-        # If the internal API changes or something goes wrong, log it but don't crash
         logger.warning(f"Could not get user info from Streamlit headers: {e}")
 
     return user_info
+
 
 @st.cache_resource
 def get_db():
@@ -1242,7 +1291,7 @@ if user_query:
         f"New query received from IP: {user_details['ip']} "
         f"with User-Agent: {user_details['user_agent']}"
     )
-    
+
     st.session_state.chat_history.append(HumanMessage(content=user_query))
 
     thread_id = st.session_state.conversation_thread_id
