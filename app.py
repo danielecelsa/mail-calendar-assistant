@@ -52,6 +52,7 @@ if os.getenv("RENDER") != "true":
 # This avoids running the entire Streamlit app for every check.
 if "health" in st.query_params:
     st.text("OK")
+    print("Health check OK")
     st.stop() # Stop execution to keep it lightweight
 
 
@@ -180,7 +181,10 @@ REDIS_USAGE_KEY = "usage_queue"
 logtail_token = os.environ.get("LOGTAIL_SOURCE_TOKEN")
 if logtail_token:
     try:
-        logtail_handler = LogtailHandler(source_token=logtail_token)
+        logtail_handler = LogtailHandler(
+            source_token=logtail_token, 
+            host='https://s1583814.eu-nbg-2.betterstackdata.com',
+        )
         logtail_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
         logtail_handler.setFormatter(logtail_formatter)
         logger.addHandler(logtail_handler)
