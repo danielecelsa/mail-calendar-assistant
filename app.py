@@ -20,14 +20,12 @@ from logtail import LogtailHandler
 import time
 from time import perf_counter
 
-from streamlit.runtime import get_instance
-from streamlit.runtime.scriptrunner import get_script_run_ctx
-
 import streamlit as st
 from dotenv import load_dotenv
 
 from helpers import (
-    compute_cost
+    compute_cost,
+    get_user_info,
 )
 
 # LangGraph / LangChain Core
@@ -57,38 +55,10 @@ if "health" in st.query_params:
 
 
 # ------------------------------
-# Custom Redis Logging Handler
-# ------------------------------
-class RedisLogHandler(logging.Handler):
-    """
-    A logging handler that publishes records to a capped Redis list.
-    """
-    def __init__(self, client, key, max_entries=500):
-        super().__init__()
-        self.client = client
-        self.key = key
-        self.max_entries = max_entries
-
-    def emit(self, record):
-        """
-        Takes a log record, formats it, and pushes it to Redis.
-        """
-        try:
-            # Format the log record into a string
-            log_entry = self.format(record)
-            # Push the entry to the left of the list
-            self.client.lpush(self.key, log_entry)
-            # Trim the list to keep only the latest max_entries
-            self.client.ltrim(self.key, 0, self.max_entries - 1)
-        except Exception:
-            # If Redis fails, we don't want the logger to crash the app
-            pass
-
-# ------------------------------
 # Configuration
 # ------------------------------
-MODEL = os.environ.get("GENAI_MODEL", "gemini-2.0-flash")
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+MODEL = os.environ.get("GENAI_MODEL", "gemini-2.5-flash")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY_2")
 
 COST_PER_1K_INPUT = float(os.getenv("COST_PER_1K_TOKENS_USD_INPUT", "0.002"))
 COST_PER_1K_OUTPUT = float(os.getenv("COST_PER_1K_TOKENS_USD_OUTPUT", "0.002"))
@@ -98,31 +68,6 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = Path("agent_test.db")
 DB_URI = f"sqlite:///{DB_PATH}"
-
-
-# ------------------------------
-# Logging Setup
-# ------------------------------
-# Define the name for our Redis list for logs
-REDIS_LOGS_KEY = "supervisor_logs"
-
-# Get the top-level logger
-logger = logging.getLogger("tool_logger")
-logger.setLevel(logging.INFO)
-
-# Prevent log messages from propagating to the root logger
-logger.propagate = False
-
-# Remove any existing handlers to avoid duplicates
-if logger.hasHandlers():
-    logger.handlers.clear()
-
-# --- Handler 1: Always write to a local file (great for local debugging) ---
-file_handler = logging.FileHandler("logs/supervisor_debug.log", mode="a")
-file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
-
 
 @st.cache_resource
 def get_workflow_fallback_queue():
@@ -134,6 +79,16 @@ def get_usage_fallback_queue():
     """Gets a singleton in-memory queue instance for usage fallback."""
     return queue.Queue()
 
+WORKFLOW_QUEUE = get_workflow_fallback_queue() # This will be used only if Redis fails
+USAGE_QUEUE = get_usage_fallback_queue()    # This will be used only if Redis fails
+
+# Define the names for our Redis lists
+REDIS_WORKFLOW_KEY = "workflow_queue"
+REDIS_USAGE_KEY = "usage_queue"
+
+# ------------------------------
+# Key-Value Store (Valkey/Redis) Setup
+# ------------------------------
 @st.cache_resource
 def get_kv_client():
     """
@@ -164,26 +119,67 @@ def get_kv_client():
         return None
 
 
+# ------------------------------
+# LOGGING SETUP
+# ------------------------------
+
+# --- Custom Redis Logging Handler ---
+class RedisLogHandler(logging.Handler):
+    """
+    A logging handler that publishes records to a capped Redis list.
+    """
+    def __init__(self, client, key, max_entries=500):
+        super().__init__()
+        self.client = client
+        self.key = key
+        self.max_entries = max_entries
+
+    def emit(self, record):
+        """
+        Takes a log record, formats it, and pushes it to Redis.
+        """
+        try:
+            # Format the log record into a string
+            log_entry = self.format(record)
+            # Push the entry to the left of the list
+            self.client.lpush(self.key, log_entry)
+            # Trim the list to keep only the latest max_entries
+            self.client.ltrim(self.key, 0, self.max_entries - 1)
+        except Exception:
+            # If Redis fails, we don't want the logger to crash the app
+            pass
+
+# Define the name for our Redis list for logs
+REDIS_LOGS_KEY = "supervisor_logs"
+
+# Get the top-level logger
+logger = logging.getLogger("tool_logger")
+logger.setLevel(logging.INFO)
+
+# Prevent log messages from propagating to the root logger
+logger.propagate = False
+
+# Remove any existing handlers to avoid duplicates
+if logger.hasHandlers():
+    logger.handlers.clear()
+
+# --- Handler 1: Always write to a local file (great for local debugging) ---
+file_handler = logging.FileHandler("logs/supervisor_debug.log", mode="a")
+file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
+
 # Get the singleton instances
 kv_client = get_kv_client() # Valkey client (Redis-compatible)
-WORKFLOW_QUEUE = get_workflow_fallback_queue() # This will be used only if Redis fails
-USAGE_QUEUE = get_usage_fallback_queue()    # This will be used only if Redis fails
 
-# Define the names for our Redis lists
-REDIS_WORKFLOW_KEY = "workflow_queue"
-REDIS_USAGE_KEY = "usage_queue"
-
-
-# ------------------------------
-# Logging Setup - Part 2
-# ------------------------------
 # --- Handler 2: Add the Logtail handler IF the token is available (for production) ---
 logtail_token = os.environ.get("LOGTAIL_SOURCE_TOKEN")
+logtail_url = os.environ.get("LOGTAIL_URL")
 if logtail_token:
     try:
         logtail_handler = LogtailHandler(
             source_token=logtail_token, 
-            host='https://s1583814.eu-nbg-2.betterstackdata.com',
+            host=logtail_url,
         )
         logtail_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
         logtail_handler.setFormatter(logtail_formatter)
@@ -205,7 +201,9 @@ else:
             logger.warning(f"Failed to configure Valkey/Redis fallback logging handler: {e}")
 
 
-# Initialize Streamlit session state variables
+# --------------------------------------
+# Streamlit session state initialization
+# --------------------------------------
 if "conversation_thread_id" not in st.session_state:
     st.session_state.conversation_thread_id = str(uuid.uuid4())
 if "chat_history" not in st.session_state:
@@ -251,8 +249,11 @@ st.session_state.input_tokens_last = 0
 st.session_state.output_tokens_last = 0
 st.session_state.total_tokens_last = 0
 
-usd = 0.0
-usd_last = 0.0
+if "usd" not in st.session_state:
+    st.session_state.usd = 0.0
+if "usd_last" not in st.session_state:
+    st.session_state.usd_last = 0.0
+
 
 # ------------------------------
 # Helpers
@@ -648,50 +649,6 @@ def wait_and_flush(timeout: float = 1.0, stable_period: float = 0.05):
                 break
         time.sleep(0.01)
 
-
-def get_user_info():
-    """
-    Tries to get the user's IP address and User-Agent from Streamlit's internal API.
-    This is an undocumented feature and is known to change between Streamlit versions.
-    Returns a dictionary with 'ip' and 'user_agent'.
-    """
-    user_info = {"ip": "Unknown", "user_agent": "Unknown"}
-    try:
-        # Get the context for the current script run
-        ctx = get_script_run_ctx()
-        if ctx is None:
-            logger.warning("Could not get Streamlit script run context.")
-            return user_info
-
-        # Get the unique session ID from the context
-        session_id = ctx.session_id
-
-        # Get the Streamlit runtime instance
-        runtime = get_instance()
-        
-        # From the runtime, get the session manager, and then the specific session info
-        session_info = runtime._session_mgr.get_session_info(session_id)
-
-        if session_info is None:
-            logger.warning("Could not find session info for the current session ID.")
-            return user_info
-        
-        # The request headers are located in the 'client' attribute of the session info
-        headers = session_info.client.request.headers
-
-        # Logic for extracting IP and User-Agent remains the same
-        if 'X-Forwarded-For' in headers:
-            user_info['ip'] = headers['X-Forwarded-For'].split(',')[0].strip()
-        elif hasattr(session_info.client.request, 'remote_ip'):
-            user_info['ip'] = session_info.client.request.remote_ip
-
-        if 'User-Agent' in headers:
-            user_info['user_agent'] = headers['User-Agent']
-
-    except Exception as e:
-        logger.warning(f"Could not get user info from Streamlit headers: {e}")
-
-    return user_info
 
 
 @st.cache_resource
@@ -1280,17 +1237,19 @@ The idea is to show how to build a multi-agent system using LangGraph where a Su
 - Using Redis and SQLite DB for temporary and persistent storage
 - Tracking reasoning steps and usage metrics - per Agent
 - Estimating token usage and cost
-- Using Streamlit and Render to host the demo
+- Using Streamlit for an interactive web interface and Render to host the app
 """
 with st.expander('About this demo:', expanded=False):
     st.markdown(body)
 
-# Chat submission (note: using agent.invoke recommended to extract content)
+# ------------------------------
+# Chat submission
+# ------------------------------
 user_query = st.chat_input("Type your message here...")
 if user_query:
 
     # Get user info as soon as they submit a query
-    user_details = get_user_info()
+    user_details = get_user_info(logger)
     logger.info(
         f"New query received from IP: {user_details['ip']} "
         f"with User-Agent: {user_details['user_agent']}"
@@ -1305,9 +1264,11 @@ if user_query:
 
     # using invoke to obtain final structured response (astream requires custom handling)
     start = perf_counter()
-    supervisor_answer = supervisor.invoke(inputs, config=config)
-    st.session_state.latency = perf_counter() - start
+    with st.spinner("Thinking..."):
+        supervisor_answer = supervisor.invoke(inputs, config=config)
+    latency1 = perf_counter() - start
 
+    start2 = perf_counter()
     get_workflow(supervisor_answer, 0)
     get_usage(callback.usage_metadata, 0)
 
@@ -1315,14 +1276,16 @@ if user_query:
     
     # Compute cost
     try:
-        usd = compute_cost(st.session_state.total_input_tokens, st.session_state.total_output_tokens, COST_PER_1K_INPUT, COST_PER_1K_OUTPUT)
+        st.session_state.usd = compute_cost(st.session_state.total_input_tokens, st.session_state.total_output_tokens, COST_PER_1K_INPUT, COST_PER_1K_OUTPUT)
     except Exception:
-        usd = 0.0
+        logger.exception("Error computing total cost: %s", e)
+        st.session_state.usd = 0.0
     
     try:
-        usd_last = compute_cost(st.session_state.input_tokens_last, st.session_state.output_tokens_last, COST_PER_1K_INPUT, COST_PER_1K_OUTPUT)
+        st.session_state.usd_last = compute_cost(st.session_state.input_tokens_last, st.session_state.output_tokens_last, COST_PER_1K_INPUT, COST_PER_1K_OUTPUT)
     except Exception:
-        usd_last = 0.0
+        logger.exception("Error computing last cost: %s", e)
+        st.session_state.usd_last = 0.0
 
     logger.info("SUPERVISOR ANSWER: %s", supervisor_answer)
     logger.info("SUPERVISOR CALBACKS: %s", callback.usage_metadata)
@@ -1342,9 +1305,14 @@ if user_query:
         logger.exception("Could not extract final text from agent answer")
         final_text = str(supervisor_answer)
 
-
+    latency2 = perf_counter() - start2
+    st.session_state.latency = latency1 + latency2
+    logger.info(f"First processing time: {latency1:.2f} seconds, Post-processing time: {latency2:.2f} seconds")
     st.session_state.chat_history.append(AIMessage(content=final_text))
 
+# ------------------------------
+# Sidebar
+# ------------------------------
 with st.sidebar:
     st.header("Project :green[info]:", divider="rainbow")
     st.markdown(" ")
@@ -1360,17 +1328,15 @@ with st.sidebar:
                 st.markdown("The SQL agent is based on a Langchain community toolkit (SQLDatabaseToolkit) for reading the DB schema, listing tables, checking and executing queries")
                 st.markdown("The SQL agent is built with a custom prompt that makes it robust in parsing user queries and building correct SQL queries")
                 st.markdown("The Calendar and Mail Sub-Agents also use check_staff_info to resolve staff info as needed")
+            with st.expander("- Redis DB for temporary storage"):
+                st.markdown("A Redis DB is used to temporary store :blue[Reasoning Steps among Agents] and to show them in the sidebar once the chatbot produced its final answer")
+                st.markdown("It is also used to temporary store :blue[Token Usage metric per Agent]")
+            st.markdown("- SQLite DB for team & availability data")
             st.markdown("- LangGraph for LLM orchestration")
-            st.markdown("- LangChain React Agents")
+            st.markdown("- LangGraph ReAct agent framework")
             st.markdown("- Thinking process with Intermediate Steps")
             st.markdown("- Tokens usage & cost estimation")
             st.markdown("- Persistent conversation memory (checkpointer)")
-            with st.expander("- Usage of Handoff pattern"):
-                st.markdown("Handoff is implemented in the Send Email flow: the Mail Agent asks the user a confirmation before it actuallly sends the email, providing recipients, subject and body ")
-            with st.expander("- Redis DB for temporary storage"):
-                st.markdown("A Redis DB is used to temporary store reasoning steps among Agents and to show them in the sidebar once the chatbot produced its final answer")
-                st.markdown("It is also used to temporary store Token Usage metric per Agent")
-            st.markdown("- SQLite DB for team & availability data")
             st.markdown("- Streamlit UI")
             st.markdown("- Hosted on Render")
         with st.expander("SQLite DB - :orange[check data]"):
@@ -1389,22 +1355,20 @@ with st.sidebar:
             st.markdown("- (VERY HARD - and tokens consuming): *Create a meeting with Design team on Monday at 17, then notify them with an email*")
             st.markdown("- (VERY HARD - and tokens consuming): *Create a meeting with Developer team on Friday at 10, then notify them with an email*  \n:orange[->] not all developers are available at that time, see how the agent handles it")
 
-
-    st.markdown("---")
-    
+    st.markdown("---")    
     st.markdown(" ")
+
     with st.expander("Token Usage & Latency:"):
-        #st.markdown("#### Token Usage (total and last interaction), Estimated Costs & Latency: ")
         st.metric(label="Latency - Response time (s)", value=f"{st.session_state.latency:.2f}", border=True, label_visibility="visible", help="Time taken by all the agents to produce the LAST response")
         st.metric("Total Tokens Used", f"{st.session_state.total_tokens:.2f}", border=True, label_visibility="visible", help="Total tokens used in the whole thread - included the tokens used by tools")
-        st.metric("Estimated total cost (USD)", f"${usd:.5f}", border=True, label_visibility="visible", help="Calculated using %.4f per 1K input tokens and %.4f per 1K output tokens" % (COST_PER_1K_INPUT, COST_PER_1K_OUTPUT))
+        st.metric("Estimated total cost (USD)", f"${st.session_state.usd:.5f}", border=True, label_visibility="visible", help="Calculated using %.4f per 1K input tokens and %.4f per 1K output tokens" % (COST_PER_1K_INPUT, COST_PER_1K_OUTPUT))
         with st.expander("Last Interaction - Tokens Breakdown by Agents"):
             st.metric("Supervisor", f"{st.session_state.Supervisor_last_tokens['total_tokens']:.2f}")
             st.metric("Mail Agent", f"{st.session_state.Mail_last_tokens['total_tokens']:.2f}")
             st.metric("Calendar Agent", f"{st.session_state.Calendar_last_tokens['total_tokens']:.2f}")
             st.metric("SQL Agent", f"{st.session_state.SQL_last_tokens['total_tokens']:.2f}")
             st.metric("Total tokens - Last", f"{st.session_state.total_tokens_last:.2f}", border=True, label_visibility="visible", help="Total tokens used in the whole thread plus the tokens used by tools")
-            st.metric("Estimated Cost - Last", f"${usd_last:.5f}", border=True, label_visibility="visible", help="Total tokens used in the whole thread plus the tokens used by tools")
+            st.metric("Estimated Cost - Last", f"${st.session_state.usd_last:.5f}", border=True, label_visibility="visible", help="Total tokens used in the whole thread plus the tokens used by tools")
 
     st.markdown("---")
     #st.markdown(" ")
@@ -1435,7 +1399,9 @@ with st.sidebar:
     st.markdown("Developed by [Daniele Celsa](https://www.domenicodanielecelsa.com)")
     st.markdown("Source Code: [GitHub](github.com/domenicodanielecelsa/pdf-researcher)")
 
-# Render chat    
+# ------------------------------
+# Render chat
+# ------------------------------ 
 for msg in st.session_state.chat_history:
     if isinstance(msg, HumanMessage):
         with st.chat_message("user"):
