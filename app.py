@@ -2,6 +2,8 @@
 # Uses LangGraph ReAct framework with Google Gemini LLM.
 # Capable of scheduling events and sending emails via natural language.
 
+print("=== PRINT FROM PROCESS START ===")
+
 # ------------------------------
 # Imports
 # ------------------------------
@@ -9,7 +11,6 @@ import os
 import threading
 from pathlib import Path
 import uuid
-import logging
 import queue
 import re
 import datetime
@@ -113,6 +114,7 @@ if "latency" not in st.session_state:
     st.session_state.latency = 0.0
 if "to_cut" not in st.session_state:
     st.session_state.to_cut = 0
+
 if "total_tokens" not in st.session_state:
     st.session_state.total_tokens = 0
 if "total_input_tokens" not in st.session_state: # to track total input tokens cost
@@ -249,6 +251,7 @@ def flush_workflow_queue():
             st.session_state[key].extend([e for e in entries if e and (not isinstance(e, str) or e.strip())])
     except Exception as e:
         logger_local.exception("Error flushing workflow fallback queue: %s", e)
+
 
 def flush_usage_queue():
     """Called from main Streamlit flow to merge buffered entries (usage) into st.session_state."""
@@ -1154,14 +1157,14 @@ if user_query:
     start = perf_counter()
     with st.spinner("Thinking..."):
         supervisor_answer = supervisor.invoke(inputs, config=config)
-    latency1 = perf_counter() - start
-
-    start2 = perf_counter()
+ 
     get_workflow(supervisor_answer, 0)
     get_usage(callback.usage_metadata, 0)
 
     wait_and_flush(timeout=1.0, stable_period=0.05)
     
+    st.session_state.latency = perf_counter() - start
+
     # Compute cost
     try:
         st.session_state.usd = compute_cost(st.session_state.total_input_tokens, st.session_state.total_output_tokens, COST_PER_1K_INPUT, COST_PER_1K_OUTPUT)
@@ -1193,12 +1196,7 @@ if user_query:
         logger_all.exception("Could not extract final text from agent answer")
         final_text = str(supervisor_answer)
 
-    latency2 = perf_counter() - start2
-    st.session_state.latency = latency1 + latency2
-    logger_local.info(f"First processing time: {latency1:.2f} seconds, Post-processing time: {latency2:.2f} seconds")
-
     st.session_state.chat_history.append(AIMessage(content=final_text))
-
 
     # --- LOGGING ---
     logger_all.info("Latency for full response: %.2f seconds", st.session_state.latency)
