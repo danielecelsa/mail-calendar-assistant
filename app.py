@@ -13,15 +13,18 @@ import logging
 import queue
 import re
 import datetime
+from datetime import timezone
 import json
-import redis
-import valkey
-from logtail import LogtailHandler
 import time
+import valkey
 from time import perf_counter
-
 import streamlit as st
 from dotenv import load_dotenv
+
+from logging_config import (
+    get_logger,
+    get_redis_client
+)
 
 from helpers import (
     compute_cost,
@@ -58,13 +61,10 @@ if "health" in st.query_params:
 # Configuration
 # ------------------------------
 MODEL = os.environ.get("GENAI_MODEL", "gemini-2.5-flash")
-GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY_2")
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 COST_PER_1K_INPUT = float(os.getenv("COST_PER_1K_TOKENS_USD_INPUT", "0.002"))
 COST_PER_1K_OUTPUT = float(os.getenv("COST_PER_1K_TOKENS_USD_OUTPUT", "0.002"))
-
-LOG_DIR = Path(os.environ.get("CHAT_SUPERVISOR_LOG_DIR", "./logs"))
-LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = Path("agent_test.db")
 DB_URI = f"sqlite:///{DB_PATH}"
@@ -87,119 +87,20 @@ REDIS_WORKFLOW_KEY = "workflow_queue"
 REDIS_USAGE_KEY = "usage_queue"
 
 # ------------------------------
-# Key-Value Store (Valkey/Redis) Setup
-# ------------------------------
-@st.cache_resource
-def get_kv_client():
-    """
-    Gets a singleton Valkey/Redis client connection.
-    Uses REDIS_URL from environment variables for production (Render).
-    Falls back to a local connection for development.
-    """
-    # Render provides the connection string for its Valkey service in the REDIS_URL env var
-    redis_url = os.environ.get("REDIS_URL", None)
-
-    try:
-        if redis_url:
-            # Production environment (Render) - use the provided URL
-            logger.info("Connecting to Key-Value store via REDIS_URL.")
-            kv_client = valkey.from_url(redis_url, decode_responses=True)
-        else:
-            # Local development - connect to your local Redis/Valkey instance
-            logger.info("REDIS_URL not found. Connecting to localhost.")
-            kv_client = valkey.Redis(host="localhost", port=6379, db=0, decode_responses=True)
-
-        # Ping the server to check if the connection is alive
-        kv_client.ping()
-        logger.info("Successfully connected to Key-Value store.")
-        return kv_client
-        
-    except valkey.exceptions.ConnectionError as e:
-        logger.warning(f"Could not connect to Key-Value store: {e}. Using in-memory queue as fallback.")
-        return None
-
-
-# ------------------------------
 # LOGGING SETUP
 # ------------------------------
 
-# --- Custom Redis Logging Handler ---
-class RedisLogHandler(logging.Handler):
-    """
-    A logging handler that publishes records to a capped Redis list.
-    """
-    def __init__(self, client, key, max_entries=500):
-        super().__init__()
-        self.client = client
-        self.key = key
-        self.max_entries = max_entries
+logger_local = get_logger("local")
+logger_betterstack = get_logger("betterstack")
+logger_redis = get_logger("redis")
+logger_all = get_logger("all") 
 
-    def emit(self, record):
-        """
-        Takes a log record, formats it, and pushes it to Redis.
-        """
-        try:
-            # Format the log record into a string
-            log_entry = self.format(record)
-            # Push the entry to the left of the list
-            self.client.lpush(self.key, log_entry)
-            # Trim the list to keep only the latest max_entries
-            self.client.ltrim(self.key, 0, self.max_entries - 1)
-        except Exception:
-            # If Redis fails, we don't want the logger to crash the app
-            pass
+@st.cache_resource
+def get_kv_client():
+    kv_client = get_redis_client() 
+    return kv_client
 
-# Define the name for our Redis list for logs
-REDIS_LOGS_KEY = "supervisor_logs"
-
-# Get the top-level logger
-logger = logging.getLogger("tool_logger")
-logger.setLevel(logging.INFO)
-
-# Prevent log messages from propagating to the root logger
-logger.propagate = False
-
-# Remove any existing handlers to avoid duplicates
-if logger.hasHandlers():
-    logger.handlers.clear()
-
-# --- Handler 1: Always write to a local file (great for local debugging) ---
-file_handler = logging.FileHandler("logs/supervisor_debug.log", mode="a")
-file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
-
-# Get the singleton instances
-kv_client = get_kv_client() # Valkey client (Redis-compatible)
-
-# --- Handler 2: Add the Logtail handler IF the token is available (for production) ---
-logtail_token = os.environ.get("LOGTAIL_SOURCE_TOKEN")
-logtail_url = os.environ.get("LOGTAIL_URL")
-if logtail_token:
-    try:
-        logtail_handler = LogtailHandler(
-            source_token=logtail_token, 
-            host=logtail_url,
-        )
-        logtail_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-        logtail_handler.setFormatter(logtail_formatter)
-        logger.addHandler(logtail_handler)
-        logger.info("Logtail persistent logging handler successfully configured.")
-    except Exception as e:
-        logger.warning(f"Failed to configure Logtail logging handler: {e}")
-else:
-    # --- Fallback Handler: Use Valkey/Redis for logs ONLY if Logtail isn't configured ---
-    if kv_client:
-        try:
-            # We keep RedisLogHandler class definition, but only use it as a fallback
-            redis_handler = RedisLogHandler(client=kv_client, key=REDIS_LOGS_KEY)
-            redis_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-            redis_handler.setFormatter(redis_formatter)
-            logger.addHandler(redis_handler)
-            logger.info("Logtail token not found. Key-Value Valkey/Redis logging handler successfully configured..")
-        except Exception as e:
-            logger.warning(f"Failed to configure Valkey/Redis fallback logging handler: {e}")
-
+kv_client = get_kv_client() # Valkey client (Redis-compatible) for temporary queues
 
 # --------------------------------------
 # Streamlit session state initialization
@@ -263,7 +164,7 @@ def buffer_workflow(key: str, entries: list[str]):
         return
     
     # Debug: record process/thread so you can see where this runs
-    logger.info("buffer_workflow called in PID=%s TID=%s key=%s entries=%d",
+    logger_local.info("buffer_workflow called in PID=%s TID=%s key=%s entries=%d",
                 os.getpid(), threading.get_ident(), key, len(entries))
     
     # Prepare the data packet to be stored
@@ -273,17 +174,17 @@ def buffer_workflow(key: str, entries: list[str]):
     if kv_client:
         try:
             kv_client.lpush(REDIS_WORKFLOW_KEY, data_packet)
-            logger.info("Buffered workflow to Key-Value store for key=%s", key)
+            logger_local.info("Buffered workflow to Key-Value store for key=%s", key)
             return
         except valkey.exceptions.ConnectionError as e:
-            logger.warning(f"Key-Value store connection error in buffer_workflow: {e}. Falling back to queue.")
+            logger_local.warning(f"Key-Value store connection error in buffer_workflow: {e}. Falling back to queue.")
             # Fall through to the queue logic below
     
     # Fallback logic
     try:
         WORKFLOW_QUEUE.put_nowait((key, entries))
     except Exception as e:
-        logger.exception("Failed to buffer workflow to fallback queue: %s", e)
+        logger_local.exception("Failed to buffer workflow to fallback queue: %s", e)
 
 
 def buffer_usage(key: str, last_input: int, last_output: int, total_t: int):
@@ -291,7 +192,7 @@ def buffer_usage(key: str, last_input: int, last_output: int, total_t: int):
         return
     
     # Debug: record process/thread so you can see where this runs
-    logger.info("buffer_usage called in PID=%s TID=%s key=%s total_token=%d",
+    logger_local.info("buffer_usage called in PID=%s TID=%s key=%s total_token=%d",
                 os.getpid(), threading.get_ident(), key, total_t)
 
     usage_data = {
@@ -306,17 +207,17 @@ def buffer_usage(key: str, last_input: int, last_output: int, total_t: int):
     if kv_client:
         try:
             kv_client.lpush(REDIS_USAGE_KEY, data_packet)
-            logger.info("Buffered usage to Key-Value store for key=%s", key)
+            logger_local.info("Buffered usage to Key-Value store for key=%s", key)
             return
         except valkey.exceptions.ConnectionError as e:
-            logger.warning(f"Key-Value store connection error in buffer_usage: {e}. Falling back to queue.")
+            logger_local.warning(f"Key-Value store connection error in buffer_usage: {e}. Falling back to queue.")
             # Fall through to the queue logic below
     
     # Fallback logic
     try:
         USAGE_QUEUE.put_nowait(usage_data)
     except Exception as e:
-        logger.exception("Failed to buffer usage to fallback queue: %s", e)
+        logger_local.exception("Failed to buffer usage to fallback queue: %s", e)
 
 
 def flush_workflow_queue():
@@ -329,26 +230,25 @@ def flush_workflow_queue():
             while data_packet := kv_client.rpop(REDIS_WORKFLOW_KEY):
                 item = json.loads(data_packet)
                 key, entries = item["key"], item["entries"]
-                logger.info("Flushing workflow from Key-Value store: key=%s entries=%d", key, len(entries))
+                logger_local.info("Flushing workflow from Key-Value store: key=%s entries=%d", key, len(entries))
                 if key not in st.session_state or not isinstance(st.session_state.get(key), list):
                     st.session_state[key] = []
                 st.session_state[key].extend([e for e in entries if e and (not isinstance(e, str) or e.strip())])
             return # If we successfully processed Key-Value store, we are done.
         except valkey.exceptions.ConnectionError as e:
-            logger.warning(f"Key-Value store connection error during flush_workflow_queue: {e}. Checking fallback queue.")
+            logger_local.warning(f"Key-Value store connection error during flush_workflow_queue: {e}. Checking fallback queue.")
             # Fall through to check the in-memory queue
 
     # --- Fallback: Flush from in-memory queue ---
     try:
         while not WORKFLOW_QUEUE.empty():
             key, entries = WORKFLOW_QUEUE.get_nowait()
-            logger.info("Flushing workflow from fallback queue: key=%s entries=%d", key, len(entries))
+            logger_local.info("Flushing workflow from fallback queue: key=%s entries=%d", key, len(entries))
             if key not in st.session_state or not isinstance(st.session_state.get(key), list):
                 st.session_state[key] = []
             st.session_state[key].extend([e for e in entries if e and (not isinstance(e, str) or e.strip())])
     except Exception as e:
-        logger.exception("Error flushing workflow fallback queue: %s", e)
-
+        logger_local.exception("Error flushing workflow fallback queue: %s", e)
 
 def flush_usage_queue():
     """Called from main Streamlit flow to merge buffered entries (usage) into st.session_state."""
@@ -359,7 +259,7 @@ def flush_usage_queue():
             while data_packet := kv_client.rpop(REDIS_USAGE_KEY):
                 usage = json.loads(data_packet)
                 key = usage.get("key")
-                logger.info("Flushing usage from Key-Value store: key=%s usage=%s", key, usage)
+                logger_local.info("Flushing usage from Key-Value store: key=%s usage=%s", key, usage)
                 
                 # Ensure a dict exists for this agent key
                 if key not in st.session_state or not isinstance(st.session_state.get(key), dict):
@@ -392,14 +292,14 @@ def flush_usage_queue():
             return # If we successfully processed Key-Value store, we are done.
 
         except valkey.exceptions.ConnectionError as e:
-            logger.warning(f"Key-Value store connection error during flush_usage_queue: {e}. Checking fallback queue.")
+            logger_local.warning(f"Key-Value store connection error during flush_usage_queue: {e}. Checking fallback queue.")
             # Fall through to check the in-memory queue
 
     # --- Fallback: Flush from in-memory queue ---
     try:
         while not USAGE_QUEUE.empty():
             usage = USAGE_QUEUE.get_nowait()
-            logger.info("Flushing usage from fallback queue: usage=%s", usage)
+            logger_local.info("Flushing usage from fallback queue: usage=%s", usage)
             key = usage.get("key")
 
             # the rest of the logic is identical
@@ -426,7 +326,7 @@ def flush_usage_queue():
             st.session_state.total_tokens += new_total
 
     except Exception as e:
-        logger.exception("Error flushing usage fallback queue: %s", e)
+        logger_local.exception("Error flushing usage fallback queue: %s", e)
 
 
 def get_workflow(agent_answer: dict, agent: int):
@@ -436,7 +336,7 @@ def get_workflow(agent_answer: dict, agent: int):
     accumulate entries into WORKFLOW_QUEUE. The main flow will flush the buffer into session_stat
     """
     # Debug: record process/thread so you can see where this runs
-    logger.info("get_workflow called in PID=%s TID=%s agent=%s", os.getpid(), threading.get_ident(), agent)
+    logger_local.info("get_workflow called in PID=%s TID=%s agent=%s", os.getpid(), threading.get_ident(), agent)
 
     msgs = agent_answer.get("messages", [])
     
@@ -448,8 +348,6 @@ def get_workflow(agent_answer: dict, agent: int):
     super_first_content = getattr(msgs[1], "content", '') if (len(msgs) > 1 and hasattr(msgs[1], "content")) else (msgs[1].get("content") if (len(msgs) > 1 and isinstance(msgs[1], dict)) else '')
     first_id = getattr(msgs[0], "id", None) if (len(msgs) > 0 and hasattr(msgs[0], "id")) else (msgs[0].get("id") if (len(msgs) > 0 and isinstance(msgs[0], dict)) else None)
     super_first_id = getattr(msgs[1], "id", None) if (len(msgs) > 1 and hasattr(msgs[1], "id")) else (msgs[1].get("id") if (len(msgs) > 1 and isinstance(msgs[1], dict)) else None)
-    print(f"First content: {first_content}")
-    print(f"First ID: {first_id}")
 
     var = []
     if agent == 0: # SUPERVISOR
@@ -461,11 +359,9 @@ def get_workflow(agent_answer: dict, agent: int):
     elif agent == 3: # CALENDAR AGENT
         var = "Calendar"
     
-    print(f"{var}")
 
     key = f"{var}_agent_history"
 
-    print('HELLO')
     
     # Build local entries and put them into WORKFLOW_BUFFER instead of st.session_state
     local_entries = []
@@ -474,18 +370,14 @@ def get_workflow(agent_answer: dict, agent: int):
     if agent != 0:
         try:
             local_entries.append("_**Request**_:  \n" + first_content)
-            print("OK!")
         except Exception as e:
-            logger.exception("Errore building local workflow entries : %s", e)
+            logger_local.exception("Errore building local workflow entries : %s", e)
 
     else:
         local_entries.append("_**Request**_:  \n" + super_first_content)
-        print("OK!!!!!")
     
 
     for m in msgs:
-        print(f"ID: {m.id}")
-        
         try:
             mid = getattr(m, "id", None) if hasattr(m, "id") else (m.get("id") if isinstance(m, dict) else None)
         except Exception:
@@ -494,13 +386,12 @@ def get_workflow(agent_answer: dict, agent: int):
         if ((mid != first_id) & (mid != super_first_id if (agent == 0) else True)):
             try:
                 content = getattr(m, "content", '') if hasattr(m, "content") else (m.get("content") if isinstance(m, dict) else '')
-                # kwarg = getattr(m, "additional_kwarg", None) or m.additional_kwargs or (m.get("additional_kwarg") if isinstance(m, dict) else None)
                 tool_calls = getattr(m, "tool_calls", None) if hasattr(m, "tool_calls") else (m.get("tool_calls") if isinstance(m, dict) else None)
                 usage_metadata = getattr(m, "usage_metadata", None) if hasattr(m, "usage_metadata") else (m.get("usage_metadata") if isinstance(m, dict) else None)
                 tool_name = getattr(m, "name", None) if hasattr(m, "name") else (m.get("name") if isinstance(m, dict) else None)
                 status = getattr(m, "status", None) if hasattr(m, "status") else (m.get("status") if isinstance(m, dict) else None)
             except Exception as e:
-                logger.info("Error getting info from agent answer: %s", e)
+                logger_local.info("Error getting info from agent answer: %s", e)
                 content = ""
 
             if isinstance(m, AIMessage):
@@ -510,7 +401,7 @@ def get_workflow(agent_answer: dict, agent: int):
                     local_entries.append("-> _**With ARGS**_:  \n" + str(tool_calls[0]["args"]))
                 if usage_metadata:
                     local_entries.append("-> _**TOKEN USAGE** (agent)_:  \nInput= " + str(usage_metadata.get("input_tokens")) + ", Output= " + str(usage_metadata.get("output_tokens")) + ", TOT= " + str(usage_metadata.get("total_tokens")))
-                    logger.info(f'{var} Tokens: Input= ' + str(usage_metadata.get("input_tokens")) + ", Output= " + str(usage_metadata.get("output_tokens")) + ", TOT= " + str(usage_metadata.get("total_tokens")))
+                    logger_local.info(f'{var} Tokens: Input= ' + str(usage_metadata.get("input_tokens")) + ", Output= " + str(usage_metadata.get("output_tokens")) + ", TOT= " + str(usage_metadata.get("total_tokens")))
                     total_token += usage_metadata.get("total_tokens")
 
 
@@ -522,15 +413,15 @@ def get_workflow(agent_answer: dict, agent: int):
             
             local_entries.append("####---------------------------------------####")
 
-    logger.info(f'{var} TOTAL Tokens: {total_token}')
+    logger_local.info(f'{var} TOTAL Tokens: {total_token}')
 
     if local_entries:
         # Debug: log where we buffered
-        logger.info("Writing %d local_entries for %s (PID=%s TID=%s)",
+        logger_local.info("Writing %d local_entries for %s (PID=%s TID=%s)",
                     len(local_entries), key, os.getpid(), threading.get_ident())
         buffer_workflow(key, local_entries)
 
-    logger.info("Buffered Queue Workflow %s: %s", key, local_entries)
+    logger_local.info("Buffered Queue Workflow %s: %s", key, local_entries)
 
 
 def get_usage(usage_metadata: dict, agent: int):
@@ -538,15 +429,13 @@ def get_usage(usage_metadata: dict, agent: int):
     try:
         # extract token usage from callback (last interaction only) - sum all if multiple calls/models
         last_input = sum(usage.get("input_tokens", 0) for usage in usage_metadata.values())
-        print('Input: ', last_input)
         last_output = sum(usage.get("output_tokens", 0) for usage in usage_metadata.values())
-        print('Output: ', last_output)
         # total tokens in the whole thread (not just last interaction) 
         total_t = sum(usage.get("total_tokens", 0) for usage in usage_metadata.values())
-        print('TOTAL: ', total_t)
+        logger_local.info('TOTAL: %s', total_t)
         
     except Exception as e:
-        logger.exception("Could not extract token usage from callback: %s", e)
+        logger_local.exception("Could not extract token usage from callback: %s", e)
         last_input = 0
         last_output = 0
 
@@ -559,14 +448,12 @@ def get_usage(usage_metadata: dict, agent: int):
         var = "Mail"
     elif agent == 3: # CALENDAR AGENT
         var = "Calendar"
-    
-    print(f"{var} USAGE")
 
     key_tokens = f"{var}_last_tokens"
 
     buffer_usage(key_tokens, last_input, last_output, total_t)
 
-    logger.info("Buffered Queue Usage %s: %d", key_tokens, total_t)
+    logger_local.info("Buffered Queue Usage %s: %d", key_tokens, total_t)
 
 
 def resolve_natural_date(request_text: str, reference_date: datetime.date | None = None):
@@ -639,7 +526,7 @@ def wait_and_flush(timeout: float = 1.0, stable_period: float = 0.05):
     while time.time() - start < timeout:
         total = WORKFLOW_QUEUE.qsize() + USAGE_QUEUE.qsize()
         if total != last_total:
-            logger.info("wait_and_flush: queue size changed %s -> %s; flushing", last_total, total)
+            logger_local.info("wait_and_flush: queue size changed %s -> %s; flushing", last_total, total)
             last_total = total
             last_change_time = time.time()
             flush_workflow_queue()
@@ -657,9 +544,10 @@ def get_db():
 
     db = SQLDatabase.from_uri(DB_URI)
 
-    print(f"Dialect: {db.dialect}")
-    print(f"Available tables: {db.get_usable_table_names()}")
-    print(f'Sample output: {db.run("SELECT * FROM staff LIMIT 5;")}')
+    logger_local.info("Connected to database at %s", DB_URI)
+    logger_local.info(f"Dialect: {db.dialect}")
+    logger_local.info(f"Available tables: {db.get_usable_table_names()}")
+    logger_local.info(f'Sample output: {db.run("SELECT * FROM staff LIMIT 5;")}')
 
     return db
 
@@ -678,7 +566,7 @@ def get_llm(temp: float = 0.1):
             safety_settings=None,
             )
     except Exception as e:
-        logger.exception("Could not initialize LLM: %s", e)
+        logger_all.exception("Could not initialize LLM: %s", e)
         llm = None
 
     return llm  
@@ -699,10 +587,10 @@ def create_calendar_event(
     # Stub: In practice, this would call Google Calendar API, Outlook API, etc.
 
     if title and date and start_time and attendees:
-        logger.info("create_calendar_event Created event: %s on %s at %s with attendees %s", title, date, start_time, attendees)
+        logger_all.info("create_calendar_event Created event: %s on %s at %s with attendees %s", title, date, start_time, attendees)
         pass  # Assume event created successfully
     else:
-        logger.error("create_calendar_event Failed to create event: missing information.")
+        logger_all.error("create_calendar_event Failed to create event: missing information.")
         raise ValueError("Missing required event information.")
     
     return f"Event created: {title} on {date} from {start_time} with {len(attendees)} attendees"
@@ -721,10 +609,10 @@ def send_email(
     if to and subject and body:
         pass  # Assume email sent successfully
     else:
-        logger.error("send_email Failed to send email: missing information.")
+        logger_all.error("send_email Failed to send email: missing information.")
         raise ValueError("Missing required email information.")  
     
-    logger.info("send_email Sent email to: %s with subject: %s", to, subject)
+    logger_all.info("send_email Sent email to: %s with subject: %s", to, subject)
 
     return f"Email sent to {', '.join(to)} - Subject: {subject} - Body length: {len(body)} characters"
 
@@ -740,7 +628,7 @@ def get_sql_tools():
     tools = toolkit.get_tools()
 
     for tool in tools:
-        print(f"{tool.name}: {tool.description}\n")
+        logger_local.info(f"SQL Tool loaded: {tool.name} - {tool.description}")
 
     return tools
 
@@ -932,8 +820,8 @@ def check_staff_info(request: str) -> str:
     get_workflow(result, 1)
     get_usage(callback.usage_metadata, 1)
 
-    logger.info("SQL_AGENT RESULT: %s", result)
-    logger.info("SQL_AGENT CALBACKS: %s", callback.usage_metadata)
+    logger_local.info("SQL_AGENT RESULT: %s", result)
+    logger_local.info("SQL_AGENT CALBACKS: %s", callback.usage_metadata)
 
     return result["messages"][-1].text
 
@@ -1080,8 +968,8 @@ def schedule_event(request: str) -> str:
     get_workflow(result, 3)
     get_usage(callback.usage_metadata, 3)
 
-    logger.info("CALENDAR_AGENT RESULT: %s", result)
-    logger.info("CALENDAR_AGENT CALBACKS: %s", callback.usage_metadata)
+    logger_local.info("CALENDAR_AGENT RESULT: %s", result)
+    logger_local.info("CALENDAR_AGENT CALBACKS: %s", callback.usage_metadata)
     
     return result["messages"][-1].text
 
@@ -1113,8 +1001,8 @@ def manage_mail(request: str) -> str:
     get_workflow(result, 2)
     get_usage(callback.usage_metadata, 2)
 
-    logger.info("MAIL_AGENT RESULT: %s", result)
-    logger.info("MAIL_AGENT CALBACKS: %s", callback.usage_metadata)
+    logger_local.info("MAIL_AGENT RESULT: %s", result)
+    logger_local.info("MAIL_AGENT CALBACKS: %s", callback.usage_metadata)
     
     return result["messages"][-1].text
 
@@ -1249,8 +1137,8 @@ user_query = st.chat_input("Type your message here...")
 if user_query:
 
     # Get user info as soon as they submit a query
-    user_details = get_user_info(logger)
-    logger.info(
+    user_details = get_user_info(logger_all)
+    logger_all.info(
         f"New query received from IP: {user_details['ip']} "
         f"with User-Agent: {user_details['user_agent']}"
     )
@@ -1278,17 +1166,17 @@ if user_query:
     try:
         st.session_state.usd = compute_cost(st.session_state.total_input_tokens, st.session_state.total_output_tokens, COST_PER_1K_INPUT, COST_PER_1K_OUTPUT)
     except Exception:
-        logger.exception("Error computing total cost: %s", e)
+        logger_all.exception("Error computing total cost: %s", e)
         st.session_state.usd = 0.0
     
     try:
         st.session_state.usd_last = compute_cost(st.session_state.input_tokens_last, st.session_state.output_tokens_last, COST_PER_1K_INPUT, COST_PER_1K_OUTPUT)
     except Exception:
-        logger.exception("Error computing last cost: %s", e)
+        logger_all.exception("Error computing last cost: %s", e)
         st.session_state.usd_last = 0.0
 
-    logger.info("SUPERVISOR ANSWER: %s", supervisor_answer)
-    logger.info("SUPERVISOR CALBACKS: %s", callback.usage_metadata)
+    logger_local.info("SUPERVISOR ANSWER: %s", supervisor_answer)
+    logger_local.info("SUPERVISOR CALBACKS: %s", callback.usage_metadata)
 
     # Extract text from supervisor_answer (it will be a dict-like structure)
     try:
@@ -1302,13 +1190,47 @@ if user_query:
                 final_text = content
                 break
     except Exception:
-        logger.exception("Could not extract final text from agent answer")
+        logger_all.exception("Could not extract final text from agent answer")
         final_text = str(supervisor_answer)
 
     latency2 = perf_counter() - start2
     st.session_state.latency = latency1 + latency2
-    logger.info(f"First processing time: {latency1:.2f} seconds, Post-processing time: {latency2:.2f} seconds")
+    logger_local.info(f"First processing time: {latency1:.2f} seconds, Post-processing time: {latency2:.2f} seconds")
+
     st.session_state.chat_history.append(AIMessage(content=final_text))
+
+
+    # --- LOGGING ---
+    logger_all.info("Latency for full response: %.2f seconds", st.session_state.latency)
+    logger_all.info("Last interaction tokens: %d (input), %d (output), %d (total)", st.session_state.input_tokens_last, st.session_state.output_tokens_last, st.session_state.total_tokens_last)
+    logger_all.info("Estimated last interaction cost: $%.5f", st.session_state.usd_last)
+    logger_all.info("Total tokens so far: %d (input), %d (output), %d (total)", st.session_state.total_input_tokens, st.session_state.total_output_tokens, st.session_state.total_tokens)
+    logger_all.info("Estimated total cost so far: $%.5f", st.session_state.usd)
+
+    # Only for Supervisor
+    if st.session_state.Supervisor_last_tokens['total_tokens']:
+        logger_all.info("Supervisor last interaction tokens: %d (total)", 
+            st.session_state.Supervisor_last_tokens['total_tokens']
+        )
+    if st.session_state.Mail_last_tokens['total_tokens']:
+        logger_all.info("Mail Agent last interaction tokens: %d (total)", 
+            st.session_state.Mail_last_tokens['total_tokens']
+        )
+    if st.session_state.Calendar_last_tokens['total_tokens']:
+        logger_all.info("Calendar Agent last interaction tokens: %d (total)", 
+            st.session_state.Calendar_last_tokens['total_tokens']
+        )
+    if st.session_state.SQL_last_tokens['total_tokens']:
+        logger_all.info("SQL Agent last interaction tokens: %d (total)", 
+            st.session_state.SQL_last_tokens['total_tokens']
+        )
+
+    data_dict={
+        "ts": datetime.datetime.now(timezone.utc).isoformat(),
+        "model": MODEL,
+        "messages": [{"role": m.__class__.__name__, "content": m.content} for m in st.session_state.chat_history],
+    }
+    logger_all.info(json.dumps(data_dict, indent=2, ensure_ascii=False))
 
 # ------------------------------
 # Sidebar
