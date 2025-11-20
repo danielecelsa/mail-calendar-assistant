@@ -63,6 +63,7 @@ if "health" in st.query_params:
 # ------------------------------
 MODEL = os.environ.get("GENAI_MODEL", "gemini-2.5-flash")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+GOOGLE_API_KEY_2 = os.environ.get("GOOGLE_API_KEY_2") # paid tier key (if any)
 
 COST_PER_1K_INPUT = float(os.getenv("COST_PER_1K_TOKENS_USD_INPUT", "0.002"))
 COST_PER_1K_OUTPUT = float(os.getenv("COST_PER_1K_TOKENS_USD_OUTPUT", "0.002"))
@@ -558,12 +559,18 @@ def get_db():
 # LLM
 # ------------------------------
 @st.cache_resource
-def get_llm(temp: float = 0.1):
+def get_llm(temp: float = 0.1, key: str = "free_tier"):
     """Create an LLM instance with a specific temperature (use for per-agent control)."""
+    
+    if key == "paid_tier" and GOOGLE_API_KEY_2:
+        api_key = GOOGLE_API_KEY_2
+    else:
+        api_key = GOOGLE_API_KEY
+
     try:
         llm = ChatGoogleGenerativeAI(
             model=MODEL,
-            google_api_key=GOOGLE_API_KEY,
+            google_api_key=api_key,
             temperature=temp,
             #convert_system_message_to_human=True,
             safety_settings=None,
@@ -783,9 +790,10 @@ def get_sql_agent():
     )
     
     temp = 0.0
+    key = "paid_tier"
 
     sql_agent = create_react_agent(
-        model=get_llm(temp),
+        model=get_llm(temp, key=key),
         tools=get_sql_tools(), # qui inseriamo i tool che vengono da SQLDB
         prompt=SystemMessage(content=SQL_AGENT_PROMPT)
     )
@@ -889,9 +897,10 @@ def get_calendar_agent():
     )
 
     temp = 0.0
+    key = "paid_tier"
 
     calendar_agent = create_react_agent(
-        model=get_llm(temp),
+        model=get_llm(temp, key=key),
         tools=[create_calendar_event, check_staff_info],
         prompt=SystemMessage(content=CALENDAR_AGENT_PROMPT)
         )
@@ -922,9 +931,10 @@ def get_mail_agent():
     )
 
     temp = 0.2
+    key = "free_tier"
 
     mail_agent = create_react_agent(
-        model=get_llm(temp),
+        model=get_llm(temp, key=key),
         tools=[send_email, check_staff_info],
         prompt=SystemMessage(content=MAIL_AGENT_PROMPT)
         )
@@ -1095,9 +1105,10 @@ def build_supervisor():
     """Build the supervisor agent coordinating calendar and email sub-agents."""
 
     temp = 0.2
+    key = "free_tier"
 
     supervisor = create_react_agent(
-        model=get_llm(temp),
+        model=get_llm(temp, key=key),
         tools=[schedule_event, manage_mail, check_staff_info],
         prompt=get_supervisor_prompt(),
         checkpointer=get_checkpointer(),
@@ -1112,8 +1123,8 @@ supervisor = build_supervisor()
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.set_page_config(page_title="Calendar & Mail Assistant", page_icon="🤖", layout="wide")
-st.title("Calendar & Email Assistant")
+st.set_page_config(page_title="Calendar & Email Assistant", page_icon="🤖", layout="wide")
+st.title("🤖 AI Meetings Agent: Supervisor & SubAgents")
 body="""
 ## Schedule events and send emails with AI!
 
@@ -1235,8 +1246,13 @@ if user_query:
 # ------------------------------
 with st.sidebar:
     st.header("Project :green[info]:", divider="rainbow")
+    st.info("This demo is designed to showcase production-ready capabilities in GenAI development.")
+
     st.markdown(" ")
-    st.markdown(" ")
+    
+    # ------------------------------
+    # Info Section
+    # ------------------------------
     with st.expander("Tech stack & How to use:"):
         with st.expander("This demo features:"):
             with st.expander("- Supervisor + Sub-Agents workflow"):
@@ -1276,48 +1292,89 @@ with st.sidebar:
             st.markdown("- (VERY HARD - and tokens consuming): *Create a meeting with Developer team on Friday at 10, then notify them with an email*  \n:orange[->] not all developers are available at that time, see how the agent handles it")
 
     st.markdown("---")    
-    st.markdown(" ")
+    
+    # ------------------------------
+    # Metrics Section
+    # ------------------------------
+    st.subheader("📊 Live Metrics")
 
-    with st.expander("Token Usage & Latency:"):
-        st.metric(label="Latency - Response time (s)", value=f"{st.session_state.latency:.2f}", border=True, label_visibility="visible", help="Time taken by all the agents to produce the LAST response")
-        st.metric("Total Tokens Used", f"{st.session_state.total_tokens:.2f}", border=True, label_visibility="visible", help="Total tokens used in the whole thread - included the tokens used by tools")
-        st.metric("Estimated total cost (USD)", f"${st.session_state.usd:.5f}", border=True, label_visibility="visible", help="Calculated using %.4f per 1K input tokens and %.4f per 1K output tokens" % (COST_PER_1K_INPUT, COST_PER_1K_OUTPUT))
-        with st.expander("Last Interaction - Tokens Breakdown by Agents"):
-            st.metric("Supervisor", f"{st.session_state.Supervisor_last_tokens['total_tokens']:.2f}")
-            st.metric("Mail Agent", f"{st.session_state.Mail_last_tokens['total_tokens']:.2f}")
-            st.metric("Calendar Agent", f"{st.session_state.Calendar_last_tokens['total_tokens']:.2f}")
-            st.metric("SQL Agent", f"{st.session_state.SQL_last_tokens['total_tokens']:.2f}")
-            st.metric("Total tokens - Last", f"{st.session_state.total_tokens_last:.2f}", border=True, label_visibility="visible", help="Total tokens used in the whole thread plus the tokens used by tools")
-            st.metric("Estimated Cost - Last", f"${st.session_state.usd_last:.5f}", border=True, label_visibility="visible", help="Total tokens used in the whole thread plus the tokens used by tools")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(label=":blue[Latency]", value=f"{st.session_state.latency:.2f}s", help="Time taken by all the agents to produce the LAST response.")
+    with col2:
+        st.metric(label=":blue[Session Cost]", value=f"${st.session_state.usd:.4f}", help="Estimated cost for the entire session, calculated using %.4f per 1K input tokens and %.4f per 1K output tokens" % (COST_PER_1K_INPUT, COST_PER_1K_OUTPUT))
 
+    st.caption(f"Token Usage: :blue[{st.session_state.total_tokens}] total tokens used.", help="Total number of tokens consumed in the entire session - included the tokens used by tools.")
+    
+    with st.expander(":blue[Token Usage Breakdown:]"):
+        st.caption(f"Total Input Tokens: :blue[{st.session_state.total_input_tokens}] | Total Output Tokens: :blue[{st.session_state.total_output_tokens}]")
+        st.caption(f"Last Input Tokens: :blue[{st.session_state.input_tokens_last}] | Last Output Tokens: :blue[{st.session_state.output_tokens_last}]")
+        st.markdown(f"##### :blue[Last Interaction Tokens:] {st.session_state.total_tokens_last}", help="Number of tokens consumed in the last interaction - included the tokens used by tools.")
+        col1, col2 = st.columns(2)
+        col1.metric("Supervisor", f"{st.session_state.Supervisor_last_tokens['total_tokens']}")
+        col2.metric("Mail Agent", f"{st.session_state.Mail_last_tokens['total_tokens']}")
+        col3, col4 = st.columns(2)
+        col3.metric("Calendar Agent", f"{st.session_state.Calendar_last_tokens['total_tokens']}")
+        col4.metric("SQL Agent", f"{st.session_state.SQL_last_tokens['total_tokens']}")
+        st.metric("Last Est. Cost (USD)", f"${st.session_state.usd_last:.4f}", help="Estimated cost for the last interaction, calculated using %.4f per 1K input tokens and %.4f per 1K output tokens" % (COST_PER_1K_INPUT, COST_PER_1K_OUTPUT))
+    
     st.markdown("---")
-    #st.markdown(" ")
 
-    st.markdown("Agents' Reasoning Steps:")
-
+    # ------------------------------
+    # Reasoning Steps Section
+    # ------------------------------
+    st.subheader("🧠 Agents' Reasoning Steps")
+    temp = []
+    if not st.session_state.Supervisor_agent_history and not st.session_state.Calendar_agent_history and not st.session_state.Mail_agent_history and not st.session_state.SQL_agent_history:
+        st.caption("No tool usage in the last turn.")
+                   
     if st.session_state.Supervisor_agent_history:
         with st.expander("**Supervisor Agent Thoughts**", expanded=False):
             for msg in st.session_state.Supervisor_agent_history:
-                st.write(msg)
+                if msg != "####---------------------------------------####":
+                    temp.append(msg)
+                    temp.append("\n")
+                else:
+                    with st.expander("Interaction with Supervisor Agent", expanded=False):
+                        st.write("\n".join(temp))
+                        temp = []
 
     if st.session_state.Calendar_agent_history:
         with st.expander("**Calendar Agent Thoughts**", expanded=False):
             for msg in st.session_state.Calendar_agent_history:
-                st.write(msg)
+                if msg != "####---------------------------------------####":
+                    temp.append(msg)
+                    temp.append("\n")
+                else:
+                    with st.expander("Interaction with Calendar Agent", expanded=False):
+                        st.write("\n".join(temp))
+                        temp = []
 
     if st.session_state.Mail_agent_history:
         with st.expander("**Mail Agent Thoughts**", expanded=False):
             for msg in st.session_state.Mail_agent_history:
-                st.write(msg)
+                if msg != "####---------------------------------------####":
+                    temp.append(msg)
+                    temp.append("\n")
+                else:
+                    with st.expander("Interaction with Mail Agent", expanded=False):
+                        st.write("\n".join(temp))
+                        temp = []
 
     if st.session_state.SQL_agent_history:
         with st.expander("**SQL Agent Thoughts**", expanded=False):
             for msg in st.session_state.SQL_agent_history:
-                st.write(msg)
+                if msg != "####---------------------------------------####":
+                    temp.append(msg)
+                    temp.append("\n")
+                else:
+                    with st.expander("Interaction with SQL Agent", expanded=False):
+                        st.write("\n".join(temp))
+                        temp = []
 
     st.markdown("---")
     st.markdown("Developed by [Daniele Celsa](https://www.domenicodanielecelsa.com)")
-    st.markdown("Source Code: [GitHub](github.com/domenicodanielecelsa/pdf-researcher)")
+    st.markdown("Source Code: [GitHub](https://github.com/danielecelsa/mail-calendar-assistant)")
 
 # ------------------------------
 # Render chat
@@ -1333,4 +1390,3 @@ for msg in st.session_state.chat_history:
         content = getattr(msg, "content", None) or str(msg)
         with st.chat_message("assistant"):
             st.write(content)
-
