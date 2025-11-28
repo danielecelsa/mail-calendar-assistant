@@ -881,7 +881,6 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("[View Source Code](https://github.com/danielecelsa/mail-calendar-assistant) • Developed by **[Daniele Celsa](https://www.domenicodanielecelsa.com)**")
-    st.success("🟢 **System Status:** Hosted on Render • Monitoring Active (Redis + BetterStack)")
 
 # ------------------------------
 # Render chat
