@@ -324,8 +324,8 @@ def get_llm(agent_name: str):
             model=MODEL,
             google_api_key=api_key,
             temperature=temp,
-            #convert_system_message_to_human=True,
             safety_settings=None,
+            transport="rest" # if not working, just use python 3.11 (not 3.13)
             )
     except Exception as e:
         logger_all.exception("Could not initialize LLM: %s", e)
