@@ -880,7 +880,7 @@ with st.sidebar:
             render_workflow_node(root_node, level=0)
 
     st.markdown("---")
-    st.markdown("[View Source Code](https://github.com/danielecelsa/mail-calendar-assistant) • Developed by **[Daniele Celsa](https://www.domenicodanielecelsa.com)**")
+    st.markdown("[View Source Code](https://github.com/danielecelsa/mail-calendar-assistant) • Developed by **[Daniele Celsa](https://danielecelsa.github.io/portfolio/)**")
 
 # ------------------------------
 # Render chat
