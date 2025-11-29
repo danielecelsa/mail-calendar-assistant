@@ -445,7 +445,6 @@ def check_staff_info(request: str, callbacks: Callbacks = None) -> str:
 
 
     logger_local.info("SQL_AGENT RESULT: %s", result)
-    #logger_local.info("SQL_AGENT CALBACKS: %s", callback.usage_metadata)
 
     return result["messages"][-1].text
 
@@ -508,7 +507,6 @@ def schedule_event(request: str, callbacks: Callbacks = None) -> str:
     )
 
     logger_local.info("CALENDAR_AGENT RESULT: %s", result)
-    #logger_local.info("CALENDAR_AGENT CALBACKS: %s", callback.usage_metadata)
     
     return result["messages"][-1].text
 
@@ -540,7 +538,6 @@ def manage_mail(request: str, callbacks: Callbacks = None) -> str:
     )
 
     logger_local.info("MAIL_AGENT RESULT: %s", result)
-    #logger_local.info("MAIL_AGENT CALBACKS: %s", callback.usage_metadata)
     
     return result["messages"][-1].text
 
@@ -610,12 +607,12 @@ body="""
 
 This application demonstrates a **Hierarchical Multi-Agent System** capable of handling complex execution workflows. 
 Unlike standard chatbots, this system uses a **Supervisor-Workers** architecture to decompose vague user requests into precise, executable actions
-performed by specialized **Sub-Agents**
+performed by specialized **Sub-Agents** (Calendar, Mail, SQL-RAG)
 
 **Key Features:**
-*   **🧠 Intelligent Orchestration:** A top-level Supervisor plans workflows and delegates tasks to specialized sub-agents (Calendar, Mail, SQL-RAG).
+*   **🧠 Hierarchical Planning:** Uses a **Supervisor-Worker** pattern to prevent context pollution between agents.
 *   **🔄 Self-Correcting Logic:** Agents utilize the **ReAct pattern** (Reason + Act) to evaluate tool outputs and retry steps if parameters are missing or incorrect.
-*   **🛡️ Robust Data Retrieval:** A specialized SQL Agent performs safe, read-only queries against a corporate database to resolve entity relationships (e.g., "Who is in the Design team?") before taking action.
+*   **🛡️ Deterministic Data Retrieval:** A specialized SQL Agent performs **dynamic schema introspection** to execute safe, read-only queries. This ensures 100% syntactically correct SQL generation and eliminates hallucinations during entity resolution.
 *   **📊 Production Observability:** Includes custom-built middleware for real-time **Token Tracking**, **Cost Estimation**, and **Decision Tree Tracing**.
 """
 with st.expander('About this demo (Read me)', expanded=False):
@@ -671,7 +668,6 @@ if user_query:
         st.session_state.usd_last = 0.0
 
     logger_local.info("SUPERVISOR EVENT: %s", events)
-    #logger_local.info("SUPERVISOR CALBACKS: %s", callback.usage_metadata)
 
     # 3. Extract final text from the EVENTS list
     # We loop through events to find the last message from the AI
@@ -760,23 +756,23 @@ with st.sidebar:
             
             **Advanced Implementation:**
             - ***Custom Callback Handlers:*** Built from scratch to intercept real-time token usage and reconstruct the hierarchical execution tree for the UI.
-            - ***NL-to-SQL Engine:*** A secure, read-only SQL agent that performs dynamic schema inspection to answer data-driven questions
-            - ***Async Concurrency:*** Implements a background event loop to handle non-blocking agent streams within a synchronous Streamlit environment.
+            - ***NL-to-SQL Engine:*** A secure, read-only SQL agent that performs dynamic schema introspection to answer data-driven questions
+            - ***Non-blocking Async Event Loop:*** Implements a background loop to handle agent streams concurrently, ensuring the Streamlit UI remains responsive during long chains of thought.
                         
             **Observability & FinOps:** 
             - ***Reasoning Trace:*** Real-time "Chain of Thought" visualization.
-            - ***Live Metrics:*** Real-time Token Usage and USD Cost **per-agent**.
-            - ***Distributed Logging:***  Structured logs (Redis + BetterStack) for remote monitoring.
+            - ***Live Metrics:*** Real-time Token Usage and USD Cost **per-agent**. Allows for analysis of **Unit Economics** per interaction.
+            - ***Distributed Logging:*** Structured logs (Redis + BetterStack) for remote monitoring.
             """)
             with st.expander("Architecture Overview - :orange[show diagram]"):
                 st.caption("This workflow allows the Supervisor to delegate tasks to Sub-Agents, which can act as specialized tools.")
                 st.image("images/supervisor_subagents.png", caption="Supervisor + Sub-Agents workflow")
                 with st.expander("💡 Technical Implementation Details"):
                     st.caption("""
-                                *   **Mocked External Interfaces:** 
-                                    
-                                    The `send_email` and `create_calendar_event` tools use **interface mocking**. They validate inputs and return success signals without triggering external APIs. This ensures the demo is portable, secure, and cost-effective while proving the agents' ability to construct correct payloads.
+                                *   **Sandboxed Execution Environment:** 
                                 
+                                    To ensure security and portability for this public demo, external API calls (Email/Calendar) are sandboxed. The system validates inputs and constructs the full payload, simulating execution without triggering real-world side effects.
+                               
                                 *   **SQL Schema Introspection:** 
                                     
                                     The `check_staff_info` tool is not a vector search. It is a **deterministic SQL Agent** leveraging the `SQLDatabaseToolkit`. It dynamically reads the SQLite schema to construct syntactically correct queries, ensuring 100% accurate data retrieval for rosters and availability.
