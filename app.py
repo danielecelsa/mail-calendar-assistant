@@ -60,6 +60,11 @@ from langchain_community.agent_toolkits import SQLDatabaseToolkit
 if os.getenv("RENDER") != "true":
     load_dotenv()
 
+# Get dynamic date
+now = datetime.datetime.now()
+current_date_str = now.strftime("%Y-%m-%d")
+current_day_str = now.strftime("%A")
+print(f"Current Date: {current_date_str}, Current Day: {current_day_str}, NOW: {now}")
 
 # ------------------------------
 # Configuration
@@ -75,11 +80,14 @@ DB_PATH = Path("agent_test.db")
 DB_URI = f"sqlite:///{DB_PATH}"
 
 AGENT_CONFIG = {
-    "supervisor": {"temp": 0.2, "tier": "free"},
+    "supervisor": {"temp": 0.2, "tier": "paid"},
     "calendar":   {"temp": 0.0, "tier": "paid"},
     "sql":        {"temp": 0.0, "tier": "paid"}, 
-    "mail":       {"temp": 0.2, "tier": "free"},
+    "mail":       {"temp": 0.2, "tier": "paid"},
 }
+#"supervisor": {"temp": 0.2, "tier": "free"}, -> retry in a while, after unlock
+#"mail":       {"temp": 0.2, "tier": "free"}, -> retry in a while, after unlock
+
 
 # ------------------------------
 # LOGGING SETUP
@@ -235,9 +243,9 @@ def render_workflow_node(node, level=0, parent_name=""):
     has_children = len(children) > 0
     
     # Debug print to understand what's happening in the terminal
-    logger_local.info(f"[UI DEBUG] Analyzing Node: '{node_name}' (Type: {node_type}, Level: {level})")
-    logger_local.info(f"           -> Has Logs: {has_logs} ({len(clean_logs)} lines)")
-    logger_local.info(f"           -> Has Children: {has_children} ({len(children)} children)")
+    #logger_local.info(f"[UI DEBUG] Analyzing Node: '{node_name}' (Type: {node_type}, Level: {level})")
+    #logger_local.info(f"           -> Has Logs: {has_logs} ({len(clean_logs)} lines)")
+    #logger_local.info(f"           -> Has Children: {has_children} ({len(children)} children)")
 
     # 3. UNWRAPPING LOGIC (The heart of the solution)
     # If an Agent node has NO logs of its own AND has children, 
@@ -404,9 +412,12 @@ def get_sql_agent():
     """Get the SQL agent instance."""
 
     formatted_sql_prompt = SQL_AGENT_PROMPT.format(
+        current_date_str=current_date_str,
+        current_day_str=current_day_str,
         dialect=get_db().dialect,
         top_k=5,
     )
+
     
     sql_agent = create_react_agent(
         model=get_llm("sql"),
@@ -450,7 +461,7 @@ def check_staff_info(request: str, callbacks: Callbacks = None) -> str:
 
     logger_local.info("SQL_AGENT RESULT: %s", result)
 
-    return result["messages"][-1].text
+    return result["messages"][-1].content
 
 
 # ------------------------------
@@ -460,10 +471,15 @@ def check_staff_info(request: str, callbacks: Callbacks = None) -> str:
 def get_calendar_agent():
     """Get the Calendar agent instance."""
 
+    formatted_calendar_prompt = CALENDAR_AGENT_PROMPT.format(
+    current_date_str=current_date_str,
+    current_day_str=current_day_str,
+    )
+
     calendar_agent = create_react_agent(
         model=get_llm("calendar"),
         tools=[create_calendar_event, check_staff_info],
-        prompt=SystemMessage(content=CALENDAR_AGENT_PROMPT)
+        prompt=SystemMessage(content=formatted_calendar_prompt)
         )
     
     return calendar_agent
@@ -512,7 +528,7 @@ def schedule_event(request: str, callbacks: Callbacks = None) -> str:
 
     logger_local.info("CALENDAR_AGENT RESULT: %s", result)
     
-    return result["messages"][-1].text
+    return result["messages"][-1].content
 
 
 @tool
@@ -543,7 +559,7 @@ def manage_mail(request: str, callbacks: Callbacks = None) -> str:
 
     logger_local.info("MAIL_AGENT RESULT: %s", result)
     
-    return result["messages"][-1].text
+    return result["messages"][-1].content
 
 
 # ------------------------------
@@ -553,7 +569,12 @@ def manage_mail(request: str, callbacks: Callbacks = None) -> str:
 def get_supervisor_prompt():
     """Get the prompt template for the supervisor agent."""
     
-    system = SystemMessagePromptTemplate.from_template(SUPERVISOR_PROMPT)
+    formatted_sup_prompt = SUPERVISOR_PROMPT.format(
+    current_date_str=current_date_str,
+    current_day_str=current_day_str,
+    )
+
+    system = SystemMessagePromptTemplate.from_template(formatted_sup_prompt)
 
     hist = MessagesPlaceholder(variable_name="messages")
     prompt = ChatPromptTemplate.from_messages([system, hist])

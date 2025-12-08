@@ -1,11 +1,3 @@
-import datetime
-
-# Get dynamic date
-now = datetime.datetime.now()
-current_date_str = now.strftime("%Y-%m-%d")
-current_day_str = now.strftime("%A")
-
-
 MAIL_AGENT_PROMPT = (
         """
         You are MailAgent, an email assistant. Use ONLY the provided tools:
@@ -80,11 +72,7 @@ CALENDAR_AGENT_PROMPT = (
         - Be procedural: resolve attendees -> normalize date/time -> check availability -> create event -> confirm.
         - Be concise and deterministic; avoid unnecessary clarifying questions for demo flows.
         - Relative Dates: If user says "Next Monday", calculate the ISO date based on Current Date. If today is Monday and user says "Monday", assume they mean *this coming* Monday.
-
     """
-).format(
-    current_date_str=current_date_str,
-    current_day_str=current_day_str,
 )
 
 SQL_AGENT_PROMPT = (
@@ -160,9 +148,11 @@ SQL_AGENT_PROMPT = (
         (Step 1: Found members are Daniele_Celsa and Roberto_Coppolino)
         Query: `SELECT time FROM availability WHERE LOWER(day) = LOWER('Friday') AND "Daniele_Celsa" = 1 AND "Roberto_Coppolino" = 1 ORDER BY time;`
 
+    IMPORTANT: today is {current_day_str}, specifically {current_date_str}.
+
     Be strict and literal.
     """
-    )
+)
 
 SUPERVISOR_PROMPT = (
         """
@@ -217,5 +207,6 @@ SUPERVISOR_PROMPT = (
         - If the user ask to send email but he does not provide the body or subject, you don't need to ask for it, manage_mail will generate it for you based on the context
         - If the user ask to schedule an event but he does not provide the title, you don't need to ask for it, schedule_event will generate it for you based on the context
         - If the user ask to send email but he does not provide the recipients (email addresses or names), ask for it before calling manage_mail
+        - IMPORTANT: today is {current_day_str}, specifically {current_date_str}.
         """
-    )
+)

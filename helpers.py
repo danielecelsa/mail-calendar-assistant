@@ -286,11 +286,33 @@ class MultiAgentWorkflowHandler(BaseCallbackHandler):
                 
                 # Clean output (similar to before)
                 clean_output = str(output)
-                if "AIMessage" in clean_output and "content=" in clean_output:
-                    match = re.search(r"content='([^']*)'", clean_output)
-                    if not match: match = re.search(r'content="([^"]*)"', clean_output)
-                    if match: clean_output = match.group(1).replace("\\n", "\n").replace("\\'", "'")
                 
+                # CLEANING LOGIC:
+                # We need a regex that captures text inside quotes but ignores escaped quotes (like \')
+                if "content=" in clean_output:
+                    match = None
+                    
+                    # 1. Try double quotes first: content="...\"..."
+                    # Pattern explanation: ((?:[^"\\]|\\.)*)
+                    # Match any character that is NOT a quote/backslash OR match a backslash followed by any char
+                    match = re.search(r'content="((?:[^"\\]|\\.)*)"', clean_output)
+                    
+                    # 2. If not found, try single quotes: content='...\'...'
+                    if not match: 
+                        match = re.search(r"content='((?:[^'\\]|\\.)*)'", clean_output)
+                        
+                    if match: 
+                        # Extract the captured group
+                        raw_content = match.group(1)
+                        
+                        # Manually unescape Python's repr() formatting
+                        clean_output = (raw_content
+                                        .replace('\\"', '"')   # Unescape \" -> "
+                                        .replace("\\'", "'")   # Unescape \' -> '
+                                        .replace("\\n", "\n")  # Unescape \n -> Newline
+                                        .replace("\\\\", "\\") # Unescape \\ -> \
+                                        )
+
                 node.logs.append(f"**Observation**: {clean_output}")
         except Exception as e:
             print(f"ERROR in on_tool_end: {e}")
