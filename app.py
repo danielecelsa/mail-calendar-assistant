@@ -8,16 +8,12 @@ print("=== PRINT FROM PROCESS START ===")
 # Imports
 # ------------------------------
 import os
-import threading
 from pathlib import Path
 import uuid
-import queue
-import re
 import datetime
 from datetime import timezone
 import json
 import time
-import valkey
 from time import perf_counter
 import streamlit as st
 import streamlit.components.v1 as components
@@ -46,9 +42,8 @@ from prompts import (
 
 # LangGraph / LangChain Core
 from langgraph.prebuilt import create_react_agent
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate
-from langchain_core.callbacks import UsageMetadataCallbackHandler
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from langchain_core.callbacks import Callbacks
@@ -73,8 +68,8 @@ MODEL = os.environ.get("GENAI_MODEL", "gemini-2.5-flash")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 GOOGLE_API_KEY_2 = os.environ.get("GOOGLE_API_KEY_2") # paid tier key (if any)
 
-COST_PER_1K_INPUT = float(os.getenv("COST_PER_1K_TOKENS_USD_INPUT", "0.002"))
-COST_PER_1K_OUTPUT = float(os.getenv("COST_PER_1K_TOKENS_USD_OUTPUT", "0.002"))
+COST_PER_1K_INPUT = float(os.getenv("COST_PER_1K_TOKENS_USD_INPUT", "0.0002"))
+COST_PER_1K_OUTPUT = float(os.getenv("COST_PER_1K_TOKENS_USD_OUTPUT", "0.0002"))
 
 DB_PATH = Path("agent_test.db")
 DB_URI = f"sqlite:///{DB_PATH}"
@@ -85,9 +80,6 @@ AGENT_CONFIG = {
     "sql":        {"temp": 0.0, "tier": "paid"}, 
     "mail":       {"temp": 0.2, "tier": "paid"},
 }
-#"supervisor": {"temp": 0.2, "tier": "free"}, -> retry in a while, after unlock
-#"mail":       {"temp": 0.2, "tier": "free"}, -> retry in a while, after unlock
-
 
 # ------------------------------
 # LOGGING SETUP
@@ -225,7 +217,6 @@ def render_workflow_node(node, level=0, parent_name=""):
         "check_staff_info": "check_staff_info (SQL Agent)",
         "manage_mail": "manage_mail (Mail Agent)",
         "schedule_event": "schedule_event (Calendar Agent)",
-
     }
     pretty_name = DISPLAY_NAMES.get(node_name, node_name)
     
@@ -241,11 +232,6 @@ def render_workflow_node(node, level=0, parent_name=""):
     # 2. CONTENT ANALYSIS
     has_logs = len(clean_logs) > 0
     has_children = len(children) > 0
-    
-    # Debug print to understand what's happening in the terminal
-    #logger_local.info(f"[UI DEBUG] Analyzing Node: '{node_name}' (Type: {node_type}, Level: {level})")
-    #logger_local.info(f"           -> Has Logs: {has_logs} ({len(clean_logs)} lines)")
-    #logger_local.info(f"           -> Has Children: {has_children} ({len(children)} children)")
 
     # 3. UNWRAPPING LOGIC (The heart of the solution)
     # If an Agent node has NO logs of its own AND has children, 
@@ -304,7 +290,7 @@ def render_workflow_node(node, level=0, parent_name=""):
 
 @st.cache_resource
 def get_db():
-    """Get the SQLDatabase instance connected to the Chinook sample database."""
+    """Get the SQLDatabase instance connected to the sample database (containing staff info)."""
 
     db = SQLDatabase.from_uri(DB_URI)
 
@@ -754,12 +740,7 @@ if user_query:
     }
     logger_all.info(json.dumps(data_dict, indent=2, ensure_ascii=False))
 
-    # TO TEST:
-    logger_local.info(f"UW-TEST - SUPERVISOR HISTORY: {st.session_state.Supervisor_agent_history}")
-    logger_local.info(f"UW-TEST - MAIL AGENT HISTORY: {st.session_state.Mail_agent_history}")
-    logger_local.info(f"UW-TEST - CALENDAR AGENT HISTORY: {st.session_state.Calendar_agent_history}")
-    logger_local.info(f"UW-TEST - SQL AGENT HISTORY: {st.session_state.SQL_agent_history}")
-    logger_local.info(f"UW3-TEST - WORKFLOW TREE: {st.session_state.workflow_tree}")
+    logger_local.info(f"WORKFLOW TREE: {st.session_state.workflow_tree}")
 
 # ------------------------------
 # Sidebar
@@ -820,6 +801,10 @@ with st.sidebar:
 
                     > *What are the emails of the developer team members?*
 
+                    > *Is Marco free today?*
+                    """)
+        st.caption("👉 There are 3 members named Marco, it will ask you to specify which one (say 'Rossi', 'Verdi' or 'Bianchi')")
+        st.markdown("""
                     > *At what times is Anna Garau available all the week? I need her availability for all days*
                     """)
         st.markdown("**2. Cross-Agent Logic (SQL + Mail)**:")
