@@ -2,8 +2,6 @@
 # Uses LangGraph ReAct framework with Google Gemini LLM.
 # Capable of scheduling events and sending emails via natural language.
 
-print("=== PRINT FROM PROCESS START ===")
-
 # ------------------------------
 # Imports
 # ------------------------------
@@ -59,7 +57,6 @@ if os.getenv("RENDER") != "true":
 now = datetime.datetime.now()
 current_date_str = now.strftime("%Y-%m-%d")
 current_day_str = now.strftime("%A")
-print(f"Current Date: {current_date_str}, Current Day: {current_day_str}, NOW: {now}")
 
 # ------------------------------
 # Configuration
@@ -233,7 +230,7 @@ def render_workflow_node(node, level=0, parent_name=""):
     has_logs = len(clean_logs) > 0
     has_children = len(children) > 0
 
-    # 3. UNWRAPPING LOGIC (The heart of the solution)
+    # 3. UNWRAPPING LOGIC 
     # If an Agent node has NO logs of its own AND has children, 
     # instead of drawing an empty Expander, we pass directly to the children.
     # This removes the chain Supervisor -> Supervisor -> Supervisor
@@ -313,10 +310,6 @@ def get_llm(agent_name: str):
     api_key = get_api_key_by_tier(config["tier"])
     temp = config["temp"]
 
-    print("Creating LLM with temperature:", temp)
-    print("Using API Key:", "PAID TIER KEY" if config["tier"] == "paid" else "FREE TIER KEY")
-    print("Agent Name:", agent_name)
-
     try:
         llm = ChatGoogleGenerativeAI(
             model=MODEL,
@@ -330,7 +323,6 @@ def get_llm(agent_name: str):
         llm = None
 
     return llm  
-
 
 # ------------------------------
 # Tools - for Sub-Agents
@@ -376,7 +368,7 @@ def send_email(
     return f"Email sent to {', '.join(to)} - Subject: {subject} - Body length: {len(body)} characters"
 
 # ------------------------------
-# SQL Database Tools - we don't need @tool here cause SQLDatabaseToolkit.get_tools() does it
+# SQL Database Tools - no @tool here cause SQLDatabaseToolkit.get_tools() does it
 # ------------------------------
 @st.cache_resource
 def get_sql_tools():
@@ -584,8 +576,6 @@ def get_checkpointer():
             checkpointer = InMemoryCheckpointer()
         except Exception:
             checkpointer = None
-    print("Using checkpointer:", type(checkpointer))
-    print(checkpointer)
     return checkpointer
 
 
