@@ -5,23 +5,24 @@
 ![SQLite](https://img.shields.io/badge/Database-SQLite-orange)
 ![Streamlit](https://img.shields.io/badge/Frontend-Streamlit-FF4B4B)
 
-A production-ready implementation of a **Hierarchical Multi-Agent System** based on the Supervisor-Worker pattern. Unlike flat agentic structures, this system uses a top-level **Supervisor** to intelligently decompose vague human requests into executable actions, routing them to specialized sub-agents (SQL, Calendar, Mail) without context pollution.
+A production-ready implementation of a **Hierarchical Multi-Agent System** based on the Supervisor-Worker pattern. 
+Unlike simple flat structures, this system features a top-level **Supervisor** delegating to sub-agents and a **Shared Intelligence Layer**: specific sub-agents (Calendar, Mail) can autonomously consult the data-retrieval agent (SQL) to resolve dependencies (e.g., retrieving emails) without bothering the Supervisor.
 
 ---
 
 ## 🚀 Key Features
 
-### 1. Hierarchical Orchestration
-The system mimics a corporate hierarchy. The **Supervisor Node** maintains the global state and delegates tasks:
-*   **SQL Agent:** Safely inspects schemas and executes read-only queries to resolve entities (e.g., "Design Team" -> list of names/emails).
-*   **Calendar Agent:** Checks availability and books slots based on logic (e.g., "Find a common free slot").
-*   **Mail Agent:** Handles communication and notifications.
+### 1. Hierarchical & Horizontal Orchestration
+The system creates a dynamic workflow:
+*   **Supervisor:** Decomposes vague requests and delegates tasks to the appropriate specialist.
+*   **SQL Agent (The Shared Brain):** A read-only agent that performs schema introspection to resolve entities (names, teams, availability). It is accessible by **everyone**: the Supervisor, the Calendar Agent, and the Mail Agent.
+*   **Calendar/Mail Agents:** Execution workers that can autonomously "phone a friend" (call the SQL Agent) to fill missing parameters before executing their tools.
 
 ### 2. Recursive Reasoning Visualization (XAI)
-To build trust, the UI does not just show the answer. It implements a custom **Recursive Renderer** that visualizes the entire "Tree of Thought" in real-time, showing exactly which agent is working, what tools they call, and the raw outputs they receive.
+To build trust, the UI implements a custom **Recursive Renderer** that visualizes the entire "Tree of Thought" in real-time. It differentiates between high-level orchestration logs and the nested, internal monologues of sub-agents.
 
 ### 3. Multi-Agent FinOps
-Standard token tracking fails in multi-agent environments. This project implements a **Custom Usage Handler** that maps token consumption to specific *Agent IDs*, allowing for granular cost attribution (e.g., "How much did the SQL Agent cost vs the Mail Agent?").
+Standard token tracking fails in multi-agent environments. This project implements a **Custom Usage Handler** that maps token consumption to specific *Agent IDs*, allowing for granular cost attribution (e.g., measuring the cost of data retrieval vs. execution).
 
 ### 4. Robust State Persistence & Logging
 Supports conversation checkpoints (SQLite/Memory) allowing for context-aware multi-turn conversations.
@@ -45,23 +46,32 @@ The system follows the **Supervisor-Worker** pattern:
 graph TD
     User(User Request) --> Supervisor{Supervisor Agent}
     
-    subgraph "Worker Agents Layer"
-        Supervisor -- "Need Data?" --> SQL[SQL Agent]
-        Supervisor -- "Need Scheduling?" --> Cal[Calendar Agent]
-        Supervisor -- "Need Comms?" --> Mail[Mail Agent]
+    subgraph "Execution Layer"
+        Supervisor -- "Delegate" --> Cal[Calendar Agent]
+        Supervisor -- "Delegate" --> Mail[Mail Agent]
     end
     
-    subgraph "Tools Layer"
-        SQL --> DB[(SQLite Database)]
-        Cal --> CalTool[Availability Tool]
-        Mail --> SMTP[Email Service]
+    subgraph "Shared Intelligence Layer"
+        SQL[SQL Agent]
+        DB[(SQLite Database)]
+        SQL --> DB
     end
     
-    SQL -- "Result" --> Supervisor
-    Cal -- "Result" --> Supervisor
-    Mail -- "Result" --> Supervisor
+    %% The Supervisor can call SQL directly
+    Supervisor -- "Direct Query" --> SQL
     
-    Supervisor --> Final[Final Response]
+    %% The CRITICAL part: Workers calling the SQL Agent
+    Cal -- "Ask for Availability/Emails" --> SQL
+    Mail -- "Ask for Recipients" --> SQL
+    
+    %% Tools
+    Cal --> GCal[Calendar Tool]
+    Mail --> SMTP[Email Service]
+    
+    %% Returns
+    Cal -.-> Supervisor
+    Mail -.-> Supervisor
+    SQL -.-> Supervisor
 ```
 
 ---
@@ -78,9 +88,13 @@ graph TD
 
 ## ⚙️ Engineering Highlights
 
+### Shared Dependency Pattern
+A common pitfall in Agentic AI is the "Bottleneck Supervisor", where the boss has to fetch all data before delegating.
+In this architecture, the **SQL Agent** acts as a tool available to the Supervisor, but also to the **Calendar** and **Mail** agents.
+*   *Example:* If asked to "Email the Engineering Team", the Mail Agent doesn't fail or ask the Supervisor. It autonomously calls the `check_staff_info` tool (SQL Agent) to resolve the "Engineering Team" into a list of email addresses, and then sends the email.
+
 ### Natural Language to SQL (NL2SQL)
-The SQL Agent doesn't just run queries; it creates them.
-It creates a secure sandbox where the LLM can first `inspect_schema()` to understand the database structure, and then construct syntactically correct SQL queries to answer questions like "Who belongs to the Engineering team?", handling joins and filters autonomously.
+The SQL Agent creates a secure sandbox where the LLM performs **dynamic schema introspection**. It reads the table structure first, then constructs syntactically correct SQL queries to answer complex questions like joins between `staff` and `availability` tables.
 
 ### Recursive UI Rendering
 One of the hardest parts of Agentic UI is visualizing nested steps.
@@ -90,7 +104,7 @@ def render_workflow_node(node):
     # Recursively unpacks the LangGraph execution trace
     # differentiating between Supervisor decisions and Worker tool calls
 ```
-This ensures the user sees a clean, structured breakdown of the operation, rather than a raw JSON dump.
+This ensures the user sees exactly *why* a sub-agent called another sub-agent.
 
 ### Custom Token Tracking
 Unlike standard LangChain callbacks, `MultiAgentUsageHandler` (in helpers.py) maps execution runs to specific Agent IDs, allowing for granular cost analysis in a multi-agent environment.
@@ -99,15 +113,21 @@ Unlike standard LangChain callbacks, `MultiAgentUsageHandler` (in helpers.py) ma
 
 ## 🧪 Test Scenarios
 
-To validate the **Orchestrator's** logic, try these multi-step prompts:
+1.  **The "Autonomous Resolution" Test (Mail -> SQL):**
+    > *"Send an email to the Developer Team saying hello."*
+    *   *Expected Behavior:* The Mail Agent receives the task, realizes it doesn't have the emails, calls the SQL Agent to get them, and then sends the email. The Supervisor is NOT involved in the data fetching.
 
-1.  **The "Entity Resolution" Test (SQL + Calendar):**
-    > *"Find a time when both Marco Rossi and the Developer team are available on Friday."*
-    *   *Logic:* The Supervisor must first ask SQL Agent to resolve "Developer team" to a list of names, then check intersection of availability and finally pass those info to the Calendar Agent.
+2.  **The "Implicit Dependency" Test (Calendar -> SQL):**
+    > *"Schedule a meeting with **Marco Rossi** next Friday at 10am."*
+    *   *Expected Behavior:* The Supervisor delegates to the Calendar Agent, which then calls the SQL Agent to check Marco's availability before creating the event (in case Marco is available).
 
-2.  **The "Full Workflow" Test (End-to-End):**
-    > *"Schedule a meeting with Anna Garau next Monday at 10am and send her an email confirmation."*
-    *   *Logic:* Triggers Supervisor -> Calendar -> SQL (check Availability) -> Calendar (Booking) -> Mail (Sending).
+3.  **The "Direct Query" Test (Supervisor -> SQL):**
+    > *"Find a time when both Marco Rossi and Anna Garau are available on Friday."*
+    *   *Expected Behavior:* Since no action is requested, the Supervisor calls the SQL Agent directly to answer the question without involving the Calendar Agent.
+
+3.  **The "Full Orchestration" Test:**
+    > *"Schedule a meeting with the Design Team next Monday at 10am and notify them."*
+    *   *Expected Behavior:* Supervisor -> Calendar -> SQL (check Availability) -> Calendar (Booking) -> Supervisor -> Mail -> SQL (check Email Addresses) -> Mail (Sending).
 
 ---
 
