@@ -51,16 +51,29 @@ graph TD
         Supervisor -- "Delegate" --> Mail[Mail Agent]
     end
     
-    subgraph "Shared Intelligence Layer"
+    %% 1. Use a blank title [" "] to prevent the top overlap
+    subgraph SIL [" "]
+        direction TB
+        
+        %% 2. Main stack: SQL and DB
         SQL[SQL Agent]
         DB[(SQLite Database)]
         SQL --> DB
+        
+        %% 3. The Footer Row: [Label] on the left, [Spacer] on the right
+        %% This forces the label to the left corner while the 'S' node 
+        %% acts as a weight to keep the DB centered in the middle.
+        L["Shared Intelligence Layer"] ~~~ S[ ]
+        
+        %% 4. Invisible links to position the footer at the bottom
+        DB ~~~ L
+        DB ~~~ S
     end
     
     %% The Supervisor can call SQL directly
     Supervisor -- "Direct Query" --> SQL
     
-    %% The CRITICAL part: Workers calling the SQL Agent
+    %% Workers calling the SQL Agent
     Cal -- "Ask for Availability/Emails" --> SQL
     Mail -- "Ask for Recipients" --> SQL
     
@@ -72,6 +85,15 @@ graph TD
     Cal -.-> Supervisor
     Mail -.-> Supervisor
     SQL -.-> Supervisor
+
+    %% STYLING
+    %% Make the Label look like a real title (16px, bold)
+    classDef labelStyle fill:none,stroke:none,color:#666,font-weight:bold,font-size:16px;
+    %% Make the spacer completely invisible
+    classDef invisible fill:none,stroke:none,color:#fff0;
+    
+    class L labelStyle;
+    class S invisible;
 ```
 
 ---
