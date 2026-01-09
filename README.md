@@ -51,28 +51,16 @@ graph TD
         Supervisor -- "Delegate" --> Mail[Mail Agent]
     end
     
-    %% Shared Intelligence Layer
-    subgraph SIL [" "]
-        direction TB
-        
-        %% Core Logic
+    subgraph "Shared Intelligence Layer"
         SQL[SQL Agent]
         DB[(SQLite Database)]
         SQL --> DB
-        
-        %% The Footer Row: [Label] --- [Center Anchor] --- [Right Spacer]
-        %% This creates a rigid horizontal base that forces centering
-        L["Shared Intelligence Layer"] ~~~ Anchor[ ] ~~~ R[ ]
-        
-        %% Force DB to stay centered above the Anchor
-        DB ~~~ Anchor
-        
-        %% Push the footer to the bottom
-        SQL ~~~ L
     end
     
-    %% External Connections
+    %% The Supervisor can call SQL directly
     Supervisor -- "Direct Query" --> SQL
+    
+    %% The CRITICAL part: Workers calling the SQL Agent
     Cal -- "Ask for Availability/Emails" --> SQL
     Mail -- "Ask for Recipients" --> SQL
     
@@ -84,15 +72,6 @@ graph TD
     Cal -.-> Supervisor
     Mail -.-> Supervisor
     SQL -.-> Supervisor
-
-    %% STYLING
-    %% Label: Font size 16px (Standard Subgraph size), Bold, Aligned Left
-    classDef labelStyle fill:none,stroke:none,color:#666,font-weight:bold,font-size:16px;
-    %% Spacers: Completely invisible
-    classDef spacerStyle fill:none,stroke:none,color:#fff0;
-    
-    class L labelStyle;
-    class Anchor,R spacerStyle;
 ```
 
 ---
