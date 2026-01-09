@@ -51,11 +51,7 @@ graph TD
         Supervisor -- "Delegate" --> Mail[Mail Agent]
     end
     
-    subgraph "Shared Intelligence Layer"
-        %% 1. This invisible node pushes the content down
-        Spacer[ ] 
-        %% 2. Invisible link to SQL Agent
-        Spacer ~~~ SQL
+    subgraph "Shared Intelligence Layer<br><br><br>"
         SQL[SQL Agent]
         DB[(SQLite Database)]
         SQL --> DB
@@ -76,10 +72,6 @@ graph TD
     Cal -.-> Supervisor
     Mail -.-> Supervisor
     SQL -.-> Supervisor
-    
-    %% 3. Styling to make the Spacer completely invisible
-    classDef invisible fill:none,stroke:none,color:#0000;
-    class Spacer invisible;
 ```
 
 ---
