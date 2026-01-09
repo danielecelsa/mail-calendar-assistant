@@ -51,24 +51,26 @@ graph TD
         Supervisor -- "Delegate" --> Mail[Mail Agent]
     end
     
-    %% We leave the subgraph title blank " " 
+    %% Shared Intelligence Layer - Title removed to avoid overlap
     subgraph SIL [" "]
         direction TB
+        
+        %% Core Nodes
         SQL[SQL Agent]
         DB[(SQLite Database)]
         SQL --> DB
         
-        %% This acts as your label at the bottom
-        LayerLabel[Shared Intelligence Layer]
+        %% Invisible Footer Row to force alignment
+        %% L is the label, S is a spacer to balance the centering
+        L[Shared Intelligence Layer] ~~~ S[                       ]
+        
+        %% Vertical Spacing to push footer to the bottom
+        DB ~~~ L
+        DB ~~~ S
     end
     
-    %% Force the label to the bottom using an invisible link
-    DB ~~~ LayerLabel
-    
-    %% The Supervisor can call SQL directly
+    %% External Connections
     Supervisor -- "Direct Query" --> SQL
-    
-    %% Workers calling the SQL Agent
     Cal -- "Ask for Availability/Emails" --> SQL
     Mail -- "Ask for Recipients" --> SQL
     
@@ -81,9 +83,9 @@ graph TD
     Mail -.-> Supervisor
     SQL -.-> Supervisor
 
-    %% Styling to make the "Fake Label" look like a subgraph title
-    classDef labelStyle fill:none,stroke:none,color:#666,font-weight:bold,font-size:12px;
-    class LayerLabel labelStyle;
+    %% Styling for a clean look
+    classDef labelStyle fill:none,stroke:none,color:#888,font-weight:bold,font-size:11px;
+    class L,S labelStyle;
 ```
 
 ---
