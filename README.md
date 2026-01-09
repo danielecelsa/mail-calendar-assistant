@@ -51,11 +51,20 @@ graph TD
         Supervisor -- "Delegate" --> Mail[Mail Agent]
     end
     
-    subgraph "Shared Intelligence Layer<br><br>"
-        SQL[SQL Agent]
+    subgraph "Shared Intelligence Layer"
+        %% 1. The Pad node creates the vertical space
+        Pad[ ]
+        
+        %% 2. Link Pad to SQL to push SQL down
+        Pad ~~~ SQL[SQL Agent]
+
         DB[(SQLite Database)]
         SQL --> DB
     end
+
+    %% 3. CRITICAL: Invisible anchor to keep the diagram Vertical
+    %% Linking the center of the top to the pad forces a Top-Down layout
+    Supervisor ~~~ Pad
     
     %% The Supervisor can call SQL directly
     Supervisor -- "Direct Query" --> SQL
@@ -72,6 +81,10 @@ graph TD
     Cal -.-> Supervisor
     Mail -.-> Supervisor
     SQL -.-> Supervisor
+
+    %% 4. Styling to hide the Pad entirely
+    classDef invisible fill:none,stroke:none,color:#0000,font-size:0px;
+    class Pad invisible;
 ```
 
 ---
