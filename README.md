@@ -72,6 +72,8 @@ graph TD
     Cal -.-> Supervisor
     Mail -.-> Supervisor
     SQL -.-> Supervisor
+    SQL -.-> Cal
+    SQL -.-> Mail
 ```
 
 ---
