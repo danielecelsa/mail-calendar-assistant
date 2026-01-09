@@ -51,16 +51,24 @@ graph TD
         Supervisor -- "Delegate" --> Mail[Mail Agent]
     end
     
-    subgraph "Shared Intelligence Layer"
+    %% We leave the subgraph title blank " " 
+    subgraph SIL [" "]
+        direction TB
         SQL[SQL Agent]
         DB[(SQLite Database)]
         SQL --> DB
+        
+        %% This acts as your label at the bottom
+        LayerLabel[Shared Intelligence Layer]
     end
+    
+    %% Force the label to the bottom using an invisible link
+    DB ~~~ LayerLabel
     
     %% The Supervisor can call SQL directly
     Supervisor -- "Direct Query" --> SQL
     
-    %% The CRITICAL part: Workers calling the SQL Agent
+    %% Workers calling the SQL Agent
     Cal -- "Ask for Availability/Emails" --> SQL
     Mail -- "Ask for Recipients" --> SQL
     
@@ -72,6 +80,10 @@ graph TD
     Cal -.-> Supervisor
     Mail -.-> Supervisor
     SQL -.-> Supervisor
+
+    %% Styling to make the "Fake Label" look like a subgraph title
+    classDef labelStyle fill:none,stroke:none,color:#666,font-weight:bold,font-size:12px;
+    class LayerLabel labelStyle;
 ```
 
 ---
