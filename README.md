@@ -76,6 +76,10 @@ graph TD
     Cal -.-> Supervisor
     Mail -.-> Supervisor
     SQL -.-> Supervisor
+    
+    %% 3. Styling to make the Spacer completely invisible
+    classDef invisible fill:none,stroke:none,color:#0000;
+    class Spacer invisible;
 ```
 
 ---
