@@ -54,8 +54,6 @@ graph TD
     subgraph "Shared Intelligence Layer"
         %% 1. This invisible node pushes the content down
         Spacer[ ] 
-        %% 2. Invisible link to SQL Agent
-        Spacer ~~~ SQL
         SQL[SQL Agent]
         DB[(SQLite Database)]
         SQL --> DB
