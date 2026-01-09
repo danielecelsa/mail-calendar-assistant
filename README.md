@@ -73,6 +73,9 @@ graph TD
     %% Linking the side-workers to the SQL agent helps keep the vertical flow
     Cal --> SQL
     Mail --> SQL
+
+    %% The Supervisor can call SQL directly
+    Supervisor -- "Direct Query" --> SQL
     
     %% Tool Connections
     Cal --> GCal[Calendar Tool]
