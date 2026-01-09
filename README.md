@@ -51,22 +51,24 @@ graph TD
         Supervisor -- "Delegate" --> Mail[Mail Agent]
     end
     
-    %% Shared Intelligence Layer - Title removed to avoid overlap
+    %% Shared Intelligence Layer
     subgraph SIL [" "]
         direction TB
         
-        %% Core Nodes
+        %% Core Logic
         SQL[SQL Agent]
         DB[(SQLite Database)]
         SQL --> DB
         
-        %% Invisible Footer Row to force alignment
-        %% L is the label, S is a spacer to balance the centering
-        L[Shared Intelligence Layer] ~~~ S[                       ]
+        %% The Footer Row: [Label] --- [Center Anchor] --- [Right Spacer]
+        %% This creates a rigid horizontal base that forces centering
+        L["Shared Intelligence Layer"] ~~~ Anchor[ ] ~~~ R[ ]
         
-        %% Vertical Spacing to push footer to the bottom
-        DB ~~~ L
-        DB ~~~ S
+        %% Force DB to stay centered above the Anchor
+        DB ~~~ Anchor
+        
+        %% Push the footer to the bottom
+        SQL ~~~ L
     end
     
     %% External Connections
@@ -83,9 +85,14 @@ graph TD
     Mail -.-> Supervisor
     SQL -.-> Supervisor
 
-    %% Styling for a clean look
-    classDef labelStyle fill:none,stroke:none,color:#888,font-weight:bold,font-size:11px;
-    class L,S labelStyle;
+    %% STYLING
+    %% Label: Font size 16px (Standard Subgraph size), Bold, Aligned Left
+    classDef labelStyle fill:none,stroke:none,color:#666,font-weight:bold,font-size:16px;
+    %% Spacers: Completely invisible
+    classDef spacerStyle fill:none,stroke:none,color:#fff0;
+    
+    class L labelStyle;
+    class Anchor,R spacerStyle;
 ```
 
 ---
