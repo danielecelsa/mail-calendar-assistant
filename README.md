@@ -51,7 +51,7 @@ graph TD
         Supervisor -- "Delegate" --> Mail[Mail Agent]
     end
     
-    subgraph "Shared Intelligence Layer<br><br><br><br><br>"
+    subgraph "Shared Intelligence Layer<br><br>"
         SQL[SQL Agent]
         DB[(SQLite Database)]
         SQL --> DB
