@@ -51,33 +51,20 @@ graph TD
         Supervisor -- "Delegate" --> Mail[Mail Agent]
     end
     
-    %% 1. Use a blank title [" "] to clear the top space
-    subgraph SIL [" "]
-        direction TB
-        
-        %% 2. The Core Boxes
+    subgraph "Shared Intelligence Layer"
         SQL[SQL Agent]
         DB[(SQLite Database)]
         SQL --> DB
-        
-        %% 3. The Footer Row (L=Label, C=Center, R=Right Spacer)
-        %% This creates a wide base that prevents the "Side-by-Side" flip
-        L["Shared Intelligence Layer"] ~~~ C[ ] ~~~ R[ ]
-        
-        %% 4. Keep things centered and pushed to the bottom
-        DB ~~~ C
-        SQL ~~~ L
     end
     
-    %% 5. The "Vertical Lock"
-    %% Linking the side-workers to the SQL agent helps keep the vertical flow
-    Cal --> SQL
-    Mail --> SQL
-
     %% The Supervisor can call SQL directly
     Supervisor -- "Direct Query" --> SQL
     
-    %% Tool Connections
+    %% The CRITICAL part: Workers calling the SQL Agent
+    Cal -- "Ask for Availability/Emails" --> SQL
+    Mail -- "Ask for Recipients" --> SQL
+    
+    %% Tools
     Cal --> GCal[Calendar Tool]
     Mail --> SMTP[Email Service]
     
@@ -85,15 +72,6 @@ graph TD
     Cal -.-> Supervisor
     Mail -.-> Supervisor
     SQL -.-> Supervisor
-    SQL -.-> Cal
-    SQL -.-> Mail
-
-    %% STYLING
-    classDef labelStyle fill:none,stroke:none,color:#666,font-weight:bold,font-size:16px;
-    classDef invisible fill:none,stroke:none,color:#0000,font-size:0px;
-    
-    class L labelStyle;
-    class C,R invisible;
 ```
 
 ---
