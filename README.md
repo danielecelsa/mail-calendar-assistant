@@ -85,6 +85,8 @@ graph TD
     Cal -.-> Supervisor
     Mail -.-> Supervisor
     SQL -.-> Supervisor
+    SQL -.-> Cal
+    SQL -.-> Mail
 
     %% STYLING
     classDef labelStyle fill:none,stroke:none,color:#666,font-weight:bold,font-size:16px;
